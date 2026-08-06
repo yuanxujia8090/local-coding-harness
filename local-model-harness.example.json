@@ -1,0 +1,12 @@
+{
+	"provider": "lmstudio",
+	"models": ["your-model-id-1", "your-model-id-2"],
+	"contextWatchdog": {
+		"enabled": true,
+		"thresholdPercent": 80
+	},
+	"loopGuard": {
+		"enabled": true,
+		"window": 3
+	}
+}

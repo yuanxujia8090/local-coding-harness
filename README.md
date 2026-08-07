@@ -1,5 +1,7 @@
 # local-model-harness
 
+English | [中文](./README.zh-CN.md)
+
 A thin coding harness for [pi](https://pi.dev) + local models (LM Studio, llama.cpp, MLX, Ollama — anything behind a local OpenAI-compatible endpoint).
 
 Local models can write code. What they struggle with is **finishing work reliably**: they skip verification, announce completion after one successful command, loop on failing calls, and lose task state when context compacts. This harness adds a thin layer of discipline and evidence on top of pi — without replacing pi's agent loop, tools, sessions, or Skills.
@@ -23,7 +25,7 @@ Frontier-model harnesses assume the model rarely breaks tool-call format, follow
 - **Skipping verification.** Edits mark the session "unverified"; only a recognized verification command (`npm test`, `pytest`, `cargo test`, `tsc`, ...) clears it. Settling with unverified changes produces a visible warning.
 - **Repeat-until-stuck loops.** The loop guard detects the same call N times in a row and steers the model to change approach.
 - **Context pressure.** Local servers re-read long histories slowly and small-model recall degrades near a full window. The watchdog compacts early (default 80%) with a loop guard, and protocol/task state is re-injected after compaction.
-- **Multi-process GPU contention.** Several pi sessions talking to one local server fight over memory. A file-lease lock serializes managed-model requests across pi processes that load this extension.
+- **Multi-process GPU contention.** Several pi sessions talking to one local server fight over memory. A file-lease lock serializes managed-model requests across pi processes that load this extension. Waiting sessions show `waiting for model slot (held by pid N, Xm Ys)` in the working indicator and get a notification after 5 seconds; stale locks from dead processes are cleaned up automatically.
 
 ## What this is not
 
@@ -67,9 +69,15 @@ Create `~/.pi/agent/local-model-harness.json` listing the models the harness sho
   "loopGuard": {                       // optional
     "enabled": true,                   // default true
     "window": 3                        // default 3 (min 2)
+  },
+  "protocolLanguage": "en",            // optional: "en" (default) or "zh"
+  "gate": {                            // optional
+    "enabled": true                    // default true; false disables the contract gate entirely
   }
 }
 ```
+
+`protocolLanguage: "zh"` injects the coding protocol in Chinese. For local models, matching the protocol language to your working language reduces language drift (the injected protocol is a persistent context source; removing the English source works better than instructing against it). Unknown values fall back to `"en"`.
 
 Without a valid config the harness stays completely inactive (no gating, no injection) and `/local-doctor` prints setup instructions. Set `LOCAL_MODEL_HARNESS_CONFIG=/path/to/config.json` to use another location. Changes require a pi restart.
 
@@ -90,6 +98,16 @@ It checks, in order: the model is on your whitelist → the provider endpoint an
 | `/local-doctor` | Checks the selected managed model end-to-end (whitelist, endpoint, tool-call probe) |
 | `/local-report` | Prints session telemetry + task completion state and saves it as a session entry |
 
+Telemetry is built for diagnosing local-model sessions, not for show. `/local-report` includes:
+
+```
+Lock wait: 137230ms (12 waits >500ms, max 45000ms)   <- contention severity
+Tool calls: 35 (6 errors: bash 4, edit 2)            <- per-tool error attribution
+Verification: passed (9 commands)                    <- did the model actually verify
+Compactions: 0 (0 watchdog-triggered)                <- context pressure history
+Loop interventions: 0                                <- how often the model got steered
+```
+
 ## Tools (used by the model)
 
 | Tool | Purpose |
@@ -98,7 +116,7 @@ It checks, in order: the model is on your whitelist → the provider endpoint an
 | `task_verify` | Bind the most recent successful read-only result to one `doneWhen` condition |
 | `task_complete` | Accepted only when every `doneWhen` condition has verification evidence |
 
-Read-only exploration (`read`, `grep`, `find`, `ls`, and known read-only bash like `git status`, `ls`, `cat`) never needs a contract. `edit`, `write`, and any bash command that cannot be proven read-only are blocked until a contract exists. The model never has to recite internal tool-call IDs — it states conditions in words; the ledger matches evidence.
+Read-only exploration (`read`, `grep`, `find`, `ls`, and known read-only bash like `git status`, `ls`, `cat`, including read-only pipelines like `git status | head -30`) never needs a contract. `edit`, `write`, and any bash command that cannot be proven read-only are blocked until a contract exists — the block message is signed `[local-model-harness]` and includes a filled-in `task_contract` example. If the model keeps hitting the gate (3 blocks), the harness steers it with an explicit instruction; after 6 blocks it warns you in the UI. `gate.enabled: false` is the escape hatch if you ever need the gate off without uninstalling. The model never has to recite internal tool-call IDs — it states conditions in words; the ledger matches evidence.
 
 ## Design notes
 

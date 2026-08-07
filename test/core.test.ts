@@ -343,6 +343,29 @@ describe("TaskCompletionLedger", () => {
 		expect(isStateChangingTool("bash", { command: "ls || rm fallback" })).toBe(true);
 		expect(isStateChangingTool("bash", { command: "ls && rm something" })).toBe(true);
 		expect(isStateChangingTool("bash", { command: "find . | xargs rm" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "test ! -f scripts/fakeapp-cli.js && echo verified" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "ls -la config/ && test -d config && echo ok" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "test -f foo || echo missing" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "grep fakeapp package.json || echo no-ref" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "test -f foo && rm bar" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "python server.py &" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "cat foo &" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "ls && echo ok" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "ls scripts/fakeapp-cli.js 2>&1 || true" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "ls config 2>/dev/null || echo missing" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "test -f foo && :" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "echo hi > /tmp/out" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "! grep -q fakeapp package.json && echo clean" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "! test -f foo" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "! rm -rf /tmp/x" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "test ! -f foo || echo gone" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "node test.js" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "node test.js && echo verified" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "npm test" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "node src/setup.js" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "find . -name '*.test.js' | head -5; cat package.json" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "git status; rm -rf /tmp/x" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "ls *.js; cat package.json" })).toBe(false);
 	});
 
 	test("requires a contract before a state-changing tool call", () => {

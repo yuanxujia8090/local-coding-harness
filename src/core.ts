@@ -135,6 +135,7 @@ const PROTOCOL_EN = `
 - For non-trivial work, state a short plan before changing files.
 - Make the smallest change that satisfies the request; preserve existing user changes.
 - Run the smallest relevant verification after changes.
+- After a state change, run a successful read-only check (ls/test/grep/git status...) before task_verify; task_verify requires it.
 - Inspect the diff before reporting completion.
 - Diagnose failed verification before changing code again.
 - State clearly when verification was not run.
@@ -147,6 +148,7 @@ const PROTOCOL_ZH = `
 - 非平凡任务，修改文件前先给出简短计划。
 - 做满足需求的最小改动；保留用户已有的修改。
 - 修改后运行最小相关验证。
+- 状态变更后、task_verify 之前，先运行一次成功的只读检查（ls/test/grep/git status 等）；task_verify 会强制要求这一条。
 - 报告完成前检查 diff。
 - 验证失败先诊断原因，再改代码。
 - 没有运行验证时必须明确说明。
@@ -311,18 +313,25 @@ export type TaskCompletionSnapshot = {
 
 function isReadOnlyBashSegment(segment: string): boolean {
 	if (!segment) return false;
-	if (/^find\b/.test(segment) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/.test(segment)) return false;
+	const stripped = segment.trim().replace(/^!\s+/, "");
+	if (/^find\b/.test(stripped) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/.test(stripped)) return false;
+	if (/^true\b/.test(stripped) || /^:\s*$/.test(stripped)) return true;
+	if (/^(?:npm|npx|pnpm|yarn)\s+test\b/.test(stripped)) return true;
+	if (/^(?:node|bun)\s+\S*(?:test|spec)\S*\.(?:js|mjs|cjs|ts|mts|cts)\b/.test(stripped)) return true;
 
-	return /^(?:pwd|command\s+-v\b|which\b|type\b|test\b|git\s+(?:status|diff|log|show)\b|git\s+branch\s+--show-current\b|npm\s+(?:list|view|config\s+get)\b|(?:ls|rg|grep|cat|head|tail|find|wc|sort|uniq)\b)/.test(segment);
+	return /^(?:pwd|command\s+-v\b|which\b|type\b|test\b|echo\b|printf\b|stat\b|dirname\b|basename\b|realpath\b|readlink\b|git\s+(?:status|diff|log|show)\b|git\s+branch\s+--show-current\b|npm\s+(?:list|view|config\s+get)\b|(?:ls|rg|grep|cat|head|tail|find|wc|sort|uniq|cut|tr)\b)/.test(stripped);
 }
 
 function isReadOnlyBashCommand(command: string): boolean {
-	const normalized = command.trim();
+	const normalized = command.trim()
+		.replace(/\s*[12]>\s*(?:&[12]|\/dev\/null)\s*/g, " ")
+		.replace(/\s*>\s*\/dev\/null\s*/g, " ");
 	if (!normalized) return false;
-	if (/[;&`]|>>?|<|\$\(|\|\||&&/.test(normalized)) return false;
+	if (/[`]|>>?|<|\$\(/.test(normalized)) return false;
+	if (/(?<![&])&(?![&])/.test(normalized)) return false;
 
-	const segments = normalized.split("|").map((segment) => segment.trim());
-	return segments.length > 0 && segments.every((segment) => isReadOnlyBashSegment(segment));
+	const parts = normalized.split(/;|\|\||&&|\|/).map((part) => part.trim()).filter((part) => part.length > 0);
+	return parts.length > 0 && parts.every((part) => isReadOnlyBashSegment(part));
 }
 
 export function buildContractBlockReason(language: ProtocolLanguage = "en"): string {
@@ -458,15 +467,13 @@ export class TaskCompletionLedger {
 		if (!this.contract) return { ok: false, reason: "No active task contract." };
 		if (!this.contract.doneWhen.includes(condition)) return { ok: false, reason: "Unknown completion condition." };
 		if (this.verifiedConditions.has(condition)) return { ok: true };
-		const usedToolCalls = new Set(this.verifiedConditions.values());
 		const candidate = [...this.toolCalls.entries()]
 			.reverse()
-			.find(([toolCallId, toolCall]) => (
+			.find(([_toolCallId, toolCall]) => (
 				toolCall.succeeded
 				&& !toolCall.isStateChanging
 				&& toolCall.order > this.lastMutationOrder
 				&& !["task_contract", "task_verify", "task_complete"].includes(toolCall.toolName)
-				&& !usedToolCalls.has(toolCallId)
 			));
 		if (!candidate) return { ok: false, reason: "Run a successful read-only verification after the last state change first." };
 		this.verifiedConditions.set(condition, candidate[0]);

@@ -7,8 +7,10 @@ import {
 	ContractGate,
 	FileLeaseLock,
 	LoopGuard,
+	QualityMonitor,
 	SessionTelemetry,
 	TaskCompletionLedger,
+	assessResponseQuality,
 	buildCodingProtocol,
 	buildContractBlockReason,
 	buildGateSteerMessage,
@@ -242,6 +244,8 @@ describe("SessionTelemetry", () => {
 			compactions: 1,
 			loopInterventions: 1,
 			watchdogCompactions: 1,
+			emptyResponses: 1,
+			emptyToolCalls: 0,
 		});
 
 		expect(report).toContain("Model: test-model-7b");
@@ -273,6 +277,8 @@ describe("SessionTelemetry", () => {
 			compactions: 0,
 			loopInterventions: 0,
 			watchdogCompactions: 0,
+			emptyResponses: 0,
+			emptyToolCalls: 0,
 		});
 
 		expect(report).toContain("Lock wait: 137230ms (12 waits >500ms, max 45000ms)");
@@ -294,6 +300,8 @@ describe("SessionTelemetry", () => {
 		telemetry.recordCompaction();
 		telemetry.recordLoopIntervention();
 		telemetry.recordWatchdogCompaction();
+		telemetry.recordQuality({ ok: false, reason: "empty_response" });
+		telemetry.recordQuality({ ok: false, reason: "empty_tool_call", tool: "bash" });
 
 		expect(telemetry.snapshot(6_000)).toEqual({
 			model: "test-model-32b",
@@ -312,6 +320,8 @@ describe("SessionTelemetry", () => {
 			compactions: 1,
 			loopInterventions: 1,
 			watchdogCompactions: 1,
+			emptyResponses: 1,
+			emptyToolCalls: 1,
 		});
 	});
 });
@@ -477,6 +487,43 @@ describe("LoopGuard", () => {
 		expect(toolCallSignature("bash", { command: "npm test" })).toBe("bash:npm test");
 		expect(toolCallSignature("edit", { path: "src/a.ts" })).toBe("edit:src/a.ts");
 		expect(toolCallSignature("task_verify", { condition: "done" })).toBe('task_verify:{"condition":"done"}');
+	});
+});
+
+describe("QualityMonitor", () => {
+	test("accepts a normal text response", () => {
+		expect(assessResponseQuality([{ type: "text", text: "Running the test suite." }])).toEqual({ ok: true });
+	});
+
+	test("accepts text plus a tool call", () => {
+		expect(assessResponseQuality([
+			{ type: "text", text: "Checking the file." },
+			{ type: "toolCall", name: "read", arguments: { path: "src/index.ts" } },
+		])).toEqual({ ok: true });
+	});
+
+	test("flags an empty response with no text and no tool call", () => {
+		expect(assessResponseQuality([])).toEqual({ ok: false, reason: "empty_response" });
+	});
+
+	test("does not flag a thinking-only response as empty", () => {
+		expect(assessResponseQuality([{ type: "thinking", thinking: "planning next move..." }])).toEqual({ ok: true });
+	});
+
+	test("flags a tool call with empty arguments", () => {
+		expect(assessResponseQuality([
+			{ type: "toolCall", name: "bash", arguments: {} },
+		])).toEqual({ ok: false, reason: "empty_tool_call", tool: "bash" });
+	});
+
+	test("monitor counts anomalies across turns", () => {
+		const monitor = new QualityMonitor();
+		monitor.record([]);
+		monitor.record([{ type: "toolCall", name: "bash", arguments: {} }]);
+		monitor.record([{ type: "text", text: "ok" }]);
+		expect(monitor.snapshot()).toEqual({ emptyResponses: 1, emptyToolCalls: 1 });
+		monitor.reset();
+		expect(monitor.snapshot()).toEqual({ emptyResponses: 0, emptyToolCalls: 0 });
 	});
 });
 

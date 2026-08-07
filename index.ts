@@ -11,6 +11,7 @@ import {
 	SessionTelemetry,
 	TaskCompletionLedger,
 	LoopGuard,
+	assessResponseQuality,
 	defaultConfigPath,
 	formatDuration,
 	formatTaskCompletionReport,
@@ -348,6 +349,24 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	pi.on("turn_end", async (_event, ctx) => {
 		if (isManagedSession(ctx)) {
 			recordContextUsage(ctx);
+			const blocks = (_event.message as { content?: unknown })?.content;
+			if (Array.isArray(blocks)) {
+				const verdict = assessResponseQuality(blocks as Parameters<typeof assessResponseQuality>[0]);
+				if (!verdict.ok) {
+					telemetry.recordQuality(verdict);
+					if (verdict.reason === "empty_response") {
+						pi.sendUserMessage(
+							`[local-model-harness] The last response contained no text and no tool call. Produce a concrete next step: read a file, run a command, or report findings — do not reply with an empty or thinking-only message.`,
+							{ deliverAs: "steer" },
+						);
+					} else {
+						pi.sendUserMessage(
+							`[local-model-harness] The ${verdict.tool} tool call had no arguments. Every tool call needs its parameters filled in; re-read the tool description and call it with real input.`,
+							{ deliverAs: "steer" },
+						);
+					}
+				}
+			}
 			if (config.watchdogEnabled) {
 				const decision = watchdog.observe(ctx.getContextUsage()?.percent);
 				if (decision.action === "compact") {

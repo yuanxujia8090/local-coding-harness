@@ -176,6 +176,8 @@ export type TelemetrySnapshot = {
 	compactions: number;
 	loopInterventions: number;
 	watchdogCompactions: number;
+	emptyResponses: number;
+	emptyToolCalls: number;
 };
 
 const VERIFICATION_COMMANDS = [
@@ -207,6 +209,8 @@ export class SessionTelemetry {
 	private compactions = 0;
 	private loopInterventions = 0;
 	private watchdogCompactions = 0;
+	private emptyResponses = 0;
+	private emptyToolCalls = 0;
 
 	constructor(model = "unknown model", startedAt = Date.now()) {
 		this.model = model;
@@ -263,6 +267,13 @@ export class SessionTelemetry {
 		this.watchdogCompactions++;
 	}
 
+	recordQuality(verdict: QualityVerdict): void {
+		if (!verdict.ok) {
+			if (verdict.reason === "empty_response") this.emptyResponses++;
+			else if (verdict.reason === "empty_tool_call") this.emptyToolCalls++;
+		}
+	}
+
 	snapshot(now = Date.now()): TelemetrySnapshot {
 		const toolErrorsByTool: Record<string, number> = {};
 		for (const [tool, count] of [...this.toolErrorsByTool.entries()].sort((a, b) => b[1] - a[1])) {
@@ -285,6 +296,8 @@ export class SessionTelemetry {
 			compactions: this.compactions,
 			loopInterventions: this.loopInterventions,
 			watchdogCompactions: this.watchdogCompactions,
+			emptyResponses: this.emptyResponses,
+			emptyToolCalls: this.emptyToolCalls,
 		};
 	}
 }
@@ -540,6 +553,7 @@ export function formatTelemetryReport(snapshot: TelemetrySnapshot): string {
 		`Context peak: ${contextPeak}`,
 		`Compactions: ${snapshot.compactions} (${snapshot.watchdogCompactions} watchdog-triggered)`,
 		`Loop interventions: ${snapshot.loopInterventions}`,
+		`Quality: ${snapshot.emptyResponses + snapshot.emptyToolCalls} anomalies (${snapshot.emptyResponses} empty, ${snapshot.emptyToolCalls} empty tool call)`,
 	].join("\n");
 }
 
@@ -661,6 +675,60 @@ export class LoopGuard {
 			return signature;
 		}
 		return null;
+	}
+}
+
+export type QualityBlock =
+	| { type: "text"; text: string }
+	| { type: "thinking"; thinking: string }
+	| { type: "toolCall"; name: string; arguments: Record<string, unknown> };
+
+export type QualityVerdict =
+	| { ok: true }
+	| { ok: false; reason: "empty_response" }
+	| { ok: false; reason: "empty_tool_call"; tool: string };
+
+export type QualitySnapshot = {
+	emptyResponses: number;
+	emptyToolCalls: number;
+};
+
+export function assessResponseQuality(blocks: readonly QualityBlock[]): QualityVerdict {
+	const text = blocks.filter((block) => block.type === "text").map((block) => (block as { text: string }).text.trim()).join(" ");
+	const thinking = blocks.some((block) => block.type === "thinking");
+	const toolCalls = blocks.filter((block) => block.type === "toolCall") as Array<{ name: string; arguments: Record<string, unknown> }>;
+
+	if (!text && !thinking && toolCalls.length === 0) return { ok: false, reason: "empty_response" };
+
+	for (const call of toolCalls) {
+		if (!call.arguments || Object.keys(call.arguments).length === 0) {
+			return { ok: false, reason: "empty_tool_call", tool: call.name };
+		}
+	}
+
+	return { ok: true };
+}
+
+export class QualityMonitor {
+	private emptyResponses = 0;
+	private emptyToolCalls = 0;
+
+	reset(): void {
+		this.emptyResponses = 0;
+		this.emptyToolCalls = 0;
+	}
+
+	record(blocks: readonly QualityBlock[]): QualityVerdict {
+		const verdict = assessResponseQuality(blocks);
+		if (!verdict.ok) {
+			if (verdict.reason === "empty_response") this.emptyResponses++;
+			else if (verdict.reason === "empty_tool_call") this.emptyToolCalls++;
+		}
+		return verdict;
+	}
+
+	snapshot(): QualitySnapshot {
+		return { emptyResponses: this.emptyResponses, emptyToolCalls: this.emptyToolCalls };
 	}
 }
 

@@ -136,8 +136,11 @@ export type TelemetrySnapshot = {
 	durationMs: number;
 	providerRequests: number;
 	lockWaitMs: number;
+	lockWaits: number;
+	lockWaitMaxMs: number;
 	toolCalls: number;
 	toolErrors: number;
+	toolErrorsByTool: Record<string, number>;
 	changedFiles: string[];
 	verificationPending: boolean;
 	verificationCommands: string[];
@@ -164,8 +167,11 @@ export class SessionTelemetry {
 	private model: string;
 	private providerRequests = 0;
 	private lockWaitMs = 0;
+	private lockWaits = 0;
+	private lockWaitMaxMs = 0;
 	private toolCalls = 0;
 	private toolErrors = 0;
+	private readonly toolErrorsByTool = new Map<string, number>();
 	private readonly changedFiles = new Set<string>();
 	private verificationPending = false;
 	private readonly verificationCommands: string[] = [];
@@ -185,12 +191,18 @@ export class SessionTelemetry {
 
 	recordProviderRequest(lockWaitMs: number): void {
 		this.providerRequests++;
-		this.lockWaitMs += Math.max(0, Math.round(lockWaitMs));
+		const normalized = Math.max(0, Math.round(lockWaitMs));
+		this.lockWaitMs += normalized;
+		if (normalized >= 500) this.lockWaits++;
+		this.lockWaitMaxMs = Math.max(this.lockWaitMaxMs, normalized);
 	}
 
 	recordToolResult(toolName: string, input: Record<string, unknown>, isError: boolean): void {
 		this.toolCalls++;
-		if (isError) this.toolErrors++;
+		if (isError) {
+			this.toolErrors++;
+			this.toolErrorsByTool.set(toolName, (this.toolErrorsByTool.get(toolName) ?? 0) + 1);
+		}
 
 		if ((toolName === "edit" || toolName === "write") && !isError && typeof input.path === "string") {
 			this.changedFiles.add(input.path);
@@ -205,7 +217,7 @@ export class SessionTelemetry {
 
 	recordContextPercent(percent: number | null | undefined): void {
 		if (percent == null || !Number.isFinite(percent)) return;
-		const normalized = Math.max(0, percent);
+		const normalized = Math.round(Math.max(0, percent) * 10) / 10;
 		this.contextPeakPercent = this.contextPeakPercent == null
 			? normalized
 			: Math.max(this.contextPeakPercent, normalized);
@@ -224,13 +236,20 @@ export class SessionTelemetry {
 	}
 
 	snapshot(now = Date.now()): TelemetrySnapshot {
+		const toolErrorsByTool: Record<string, number> = {};
+		for (const [tool, count] of [...this.toolErrorsByTool.entries()].sort((a, b) => b[1] - a[1])) {
+			toolErrorsByTool[tool] = count;
+		}
 		return {
 			model: this.model,
 			durationMs: Math.max(0, now - this.startedAt),
 			providerRequests: this.providerRequests,
 			lockWaitMs: this.lockWaitMs,
+			lockWaits: this.lockWaits,
+			lockWaitMaxMs: this.lockWaitMaxMs,
 			toolCalls: this.toolCalls,
 			toolErrors: this.toolErrors,
+			toolErrorsByTool,
 			changedFiles: [...this.changedFiles].sort(),
 			verificationPending: this.verificationPending,
 			verificationCommands: [...this.verificationCommands],
@@ -380,7 +399,8 @@ export function formatTaskCompletionReport(snapshot: TaskCompletionSnapshot): st
 	return `Task completion: pending (${snapshot.missingConditions.join(", ")})`;
 }
 
-function formatDuration(durationMs: number): string {
+export function formatDuration(durationMs: number): string {
+	if (!Number.isFinite(durationMs) || durationMs < 0) return "0m 0s";
 	const seconds = Math.floor(durationMs / 1_000);
 	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
@@ -393,13 +413,22 @@ export function formatTelemetryReport(snapshot: TelemetrySnapshot): string {
 			? `passed (${snapshot.verificationCommands.length} command${snapshot.verificationCommands.length === 1 ? "" : "s"})`
 			: "not recorded";
 	const contextPeak = snapshot.contextPeakPercent == null ? "not recorded" : `${snapshot.contextPeakPercent}%`;
+	const errorBreakdown = Object.entries(snapshot.toolErrorsByTool)
+		.map(([tool, count]) => `${tool} ${count}`)
+		.join(", ");
+	const toolErrors = snapshot.toolErrors > 0
+		? `${snapshot.toolErrors} errors${errorBreakdown ? `: ${errorBreakdown}` : ""}`
+		: "0 errors";
+	const lockWait = snapshot.lockWaits > 0
+		? `${snapshot.lockWaitMs}ms (${snapshot.lockWaits} wait${snapshot.lockWaits === 1 ? "" : "s"} >500ms, max ${snapshot.lockWaitMaxMs}ms)`
+		: `${snapshot.lockWaitMs}ms`;
 
 	return [
 		`Model: ${snapshot.model}`,
 		`Duration: ${formatDuration(snapshot.durationMs)}`,
 		`Provider requests: ${snapshot.providerRequests}`,
-		`Lock wait: ${snapshot.lockWaitMs}ms`,
-		`Tool calls: ${snapshot.toolCalls} (${snapshot.toolErrors} errors)`,
+		`Lock wait: ${lockWait}`,
+		`Tool calls: ${snapshot.toolCalls} (${toolErrors})`,
 		`Changed files: ${snapshot.changedFiles.length > 0 ? snapshot.changedFiles.join(", ") : "none"}`,
 		`Verification: ${verification}`,
 		`Context peak: ${contextPeak}`,
@@ -435,10 +464,25 @@ function processExists(pid: unknown): boolean {
 	}
 }
 
+export type LockOwner = {
+	pid: number;
+	acquiredAt: string;
+};
+
 export class FileLeaseLock {
 	private handle: Awaited<ReturnType<typeof open>> | undefined;
 
 	constructor(private readonly path: string) {}
+
+	static async peekOwner(path: string): Promise<LockOwner | null> {
+		try {
+			const owner = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown; acquiredAt?: unknown };
+			if (typeof owner.pid !== "number") return null;
+			return { pid: owner.pid, acquiredAt: typeof owner.acquiredAt === "string" ? owner.acquiredAt : "" };
+		} catch {
+			return null;
+		}
+	}
 
 	async tryAcquire(): Promise<boolean> {
 		if (this.handle) return true;

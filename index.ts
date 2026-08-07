@@ -9,6 +9,7 @@ import {
 	TaskCompletionLedger,
 	LoopGuard,
 	defaultConfigPath,
+	formatDuration,
 	formatTaskCompletionReport,
 	formatTelemetryReport,
 	isManagedLocalModel,
@@ -123,12 +124,32 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	async function acquireLock(ctx: ExtensionContext): Promise<void> {
 		if (lockHeld) return;
 
+		const startedAt = Date.now();
+		let waitNotified = false;
+		let lastOwnerCheck = 0;
 		ctx.ui.setStatus("local-model-lock", "Local model: waiting for model slot");
+		ctx.ui.setWorkingMessage("Local model: waiting for model slot…");
 		while (!(await lock.tryAcquire())) {
 			await sleep(250, ctx.signal);
+			const now = Date.now();
+			if (now - lastOwnerCheck >= 2_000) {
+				lastOwnerCheck = now;
+				const owner = await FileLeaseLock.peekOwner(config.lockPath);
+				if (owner) {
+					const heldFor = formatDuration(now - Date.parse(owner.acquiredAt));
+					const message = `Local model: waiting for model slot (held by pid ${owner.pid}${Number.isFinite(Date.parse(owner.acquiredAt)) ? `, ${heldFor}` : ""})`;
+					ctx.ui.setStatus("local-model-lock", message);
+					ctx.ui.setWorkingMessage(`${message}…`);
+				}
+			}
+			if (!waitNotified && now - startedAt >= 5_000) {
+				waitNotified = true;
+				ctx.ui.notify("Local model busy in another pi session; waiting for the model slot.", "info");
+			}
 		}
 		lockHeld = true;
 		ctx.ui.setStatus("local-model-lock", `Local model: ${modelLabel(ctx)}`);
+		ctx.ui.setWorkingMessage();
 	}
 
 	async function releaseLock(ctx: ExtensionContext): Promise<void> {

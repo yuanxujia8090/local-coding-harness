@@ -188,8 +188,11 @@ describe("SessionTelemetry", () => {
 			durationMs: 65_000,
 			providerRequests: 3,
 			lockWaitMs: 125,
+			lockWaits: 0,
+			lockWaitMaxMs: 125,
 			toolCalls: 7,
 			toolErrors: 1,
+			toolErrorsByTool: { bash: 1 },
 			changedFiles: ["src/auth.ts"],
 			verificationPending: true,
 			verificationCommands: [],
@@ -209,13 +212,41 @@ describe("SessionTelemetry", () => {
 		expect(report).toContain("Loop interventions: 1");
 	});
 
+	test("reports lock contention and per-tool error breakdown", () => {
+		const report = formatTelemetryReport({
+			model: "test-model-7b",
+			durationMs: 1_000,
+			providerRequests: 41,
+			lockWaitMs: 137_230,
+			lockWaits: 12,
+			lockWaitMaxMs: 45_000,
+			toolCalls: 35,
+			toolErrors: 6,
+			toolErrorsByTool: { bash: 4, edit: 2 },
+			changedFiles: [],
+			verificationPending: false,
+			verificationCommands: ["npm test"],
+			contextPeakPercent: 16.3,
+			compactions: 0,
+			loopInterventions: 0,
+			watchdogCompactions: 0,
+		});
+
+		expect(report).toContain("Lock wait: 137230ms (12 waits >500ms, max 45000ms)");
+		expect(report).toContain("Tool calls: 35 (6 errors: bash 4, edit 2)");
+		expect(report).toContain("Context peak: 16.3%");
+	});
+
 	test("reports provider, lock, tool, context, compaction, and intervention counters", () => {
 		const telemetry = new SessionTelemetry("test-model-32b", 1_000);
 
 		telemetry.recordProviderRequest(250);
+		telemetry.recordProviderRequest(1_200);
 		telemetry.recordToolResult("read", {}, false);
 		telemetry.recordToolResult("bash", { command: "git status" }, true);
-		telemetry.recordContextPercent(48);
+		telemetry.recordToolResult("bash", { command: "git diff" }, true);
+		telemetry.recordToolResult("edit", { path: "src/a.ts" }, true);
+		telemetry.recordContextPercent(48.12345);
 		telemetry.recordContextPercent(31);
 		telemetry.recordCompaction();
 		telemetry.recordLoopIntervention();
@@ -224,14 +255,17 @@ describe("SessionTelemetry", () => {
 		expect(telemetry.snapshot(6_000)).toEqual({
 			model: "test-model-32b",
 			durationMs: 5_000,
-			providerRequests: 1,
-			lockWaitMs: 250,
-			toolCalls: 2,
-			toolErrors: 1,
+			providerRequests: 2,
+			lockWaitMs: 1_450,
+			lockWaits: 1,
+			lockWaitMaxMs: 1_200,
+			toolCalls: 4,
+			toolErrors: 3,
+			toolErrorsByTool: { bash: 2, edit: 1 },
 			changedFiles: [],
 			verificationPending: false,
 			verificationCommands: [],
-			contextPeakPercent: 48,
+			contextPeakPercent: 48.1,
 			compactions: 1,
 			loopInterventions: 1,
 			watchdogCompactions: 1,
@@ -315,6 +349,21 @@ describe("FileLeaseLock", () => {
 		await first.release();
 		expect(await second.tryAcquire()).toBe(true);
 		await second.release();
+	});
+
+	test("peekOwner exposes the holder pid while locked and null when free", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "local-model-harness-lock-"));
+		tempPaths.push(directory);
+		const lockPath = join(directory, "provider.lock");
+		const lock = new FileLeaseLock(lockPath);
+
+		expect(await FileLeaseLock.peekOwner(lockPath)).toBeNull();
+		await lock.tryAcquire();
+		const owner = await FileLeaseLock.peekOwner(lockPath);
+		expect(owner?.pid).toBe(process.pid);
+		expect(owner?.acquiredAt).not.toBe("");
+		await lock.release();
+		expect(await FileLeaseLock.peekOwner(lockPath)).toBeNull();
 	});
 });
 

@@ -2,7 +2,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import {
 	buildCodingProtocol,
+	buildContractBlockReason,
+	buildGateSteerMessage,
 	ContextWatchdog,
+	ContractGate,
 	DEFAULT_LOCAL_BASE_URL,
 	FileLeaseLock,
 	SessionTelemetry,
@@ -113,6 +116,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	let taskLedger = new TaskCompletionLedger();
 	let loopGuard = new LoopGuard(config.loopGuardWindow);
 	let watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
+	let contractGate = new ContractGate();
 	let unverifiedWarningShown = false;
 	let taskFollowUpShown = false;
 	let lastInjectedBlock: string | undefined;
@@ -185,7 +189,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	}
 
 	function buildInjectionBlock(): string {
-		const sections: string[] = [buildCodingProtocol()];
+		const sections: string[] = [buildCodingProtocol(config.protocolLanguage)];
 		if (telemetry.snapshot().verificationPending) {
 			sections.push("## Verification State\n- Local changes remain unverified. Run the smallest relevant verification before further edits or final reporting.");
 		}
@@ -269,6 +273,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		taskLedger = new TaskCompletionLedger();
 		loopGuard = new LoopGuard(config.loopGuardWindow);
 		watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
+		contractGate = new ContractGate();
 		unverifiedWarningShown = false;
 		taskFollowUpShown = false;
 		lastInjectedBlock = undefined;
@@ -312,10 +317,17 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 			}
 		}
 
-		if (taskLedger.needsContractFor(event.toolName, event.input)) {
+		if (config.gateEnabled && taskLedger.needsContractFor(event.toolName, event.input)) {
+			const escalation = contractGate.recordBlock();
+			if (escalation.steer) {
+				pi.sendUserMessage(buildGateSteerMessage(escalation.blocks, config.protocolLanguage), { deliverAs: "steer" });
+			}
+			if (escalation.notify) {
+				ctx.ui.notify(`local-model-harness: ${escalation.blocks} calls blocked without a task contract. The model is refusing to call task_contract; consider intervening.`, "warning");
+			}
 			return {
 				block: true,
-				reason: "Task contract required before state changes. Call task_contract with intent, scope, doneWhen, verificationPlan, and unresolved first.",
+				reason: buildContractBlockReason(config.protocolLanguage),
 			};
 		}
 		taskLedger.recordToolCall(event.toolCallId, event.toolName, event.input);
@@ -402,6 +414,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 			const result = taskLedger.setContract(params);
 			if (!result.ok) throw new Error(`Task contract rejected: ${result.reason}`);
 			taskFollowUpShown = false;
+			contractGate.reset();
 			persistTask();
 			return { content: [{ type: "text", text: `Task contract active: ${params.intent}` }], details: undefined };
 		},

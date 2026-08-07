@@ -10,6 +10,8 @@ export const WATCHDOG_RESUME_MARGIN_PERCENT = 10;
 export const DEFAULT_LOOP_WINDOW = 3;
 export const DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1";
 
+export type ProtocolLanguage = "en" | "zh";
+
 export type HarnessConfig = {
 	provider: string;
 	models: string[];
@@ -18,6 +20,8 @@ export type HarnessConfig = {
 	watchdogThresholdPercent: number;
 	loopGuardEnabled: boolean;
 	loopGuardWindow: number;
+	protocolLanguage: ProtocolLanguage;
+	gateEnabled: boolean;
 };
 
 export type ConfigLoadResult =
@@ -88,6 +92,11 @@ export function loadHarnessConfig(path: string = defaultConfigPath()): ConfigLoa
 		? loopGuard.window
 		: DEFAULT_LOOP_WINDOW;
 
+	const protocolLanguage: ProtocolLanguage = root.protocolLanguage === "zh" ? "zh" : "en";
+
+	const gate = readSection(root.gate);
+	const gateEnabled = typeof gate.enabled === "boolean" ? gate.enabled : true;
+
 	return {
 		ok: true,
 		path,
@@ -99,6 +108,8 @@ export function loadHarnessConfig(path: string = defaultConfigPath()): ConfigLoa
 			watchdogThresholdPercent,
 			loopGuardEnabled,
 			loopGuardWindow,
+			protocolLanguage,
+			gateEnabled,
 		},
 	};
 }
@@ -118,8 +129,7 @@ export function isManagedLocalModel(model: ModelReference | undefined, config: H
 		&& config.models.includes(model.id);
 }
 
-export function buildCodingProtocol(): string {
-	return `
+const PROTOCOL_EN = `
 ## Local Coding Protocol
 - Read project instructions and relevant code before editing.
 - For non-trivial work, state a short plan before changing files.
@@ -128,7 +138,23 @@ export function buildCodingProtocol(): string {
 - Inspect the diff before reporting completion.
 - Diagnose failed verification before changing code again.
 - State clearly when verification was not run.
+- Reply to the user in the language the user is using.
 `.trim();
+
+const PROTOCOL_ZH = `
+## 本地编码协议
+- 编辑前先阅读项目说明和相关代码。
+- 非平凡任务，修改文件前先给出简短计划。
+- 做满足需求的最小改动；保留用户已有的修改。
+- 修改后运行最小相关验证。
+- 报告完成前检查 diff。
+- 验证失败先诊断原因，再改代码。
+- 没有运行验证时必须明确说明。
+- 用用户使用的语言回复。
+`.trim();
+
+export function buildCodingProtocol(language: ProtocolLanguage = "en"): string {
+	return language === "zh" ? PROTOCOL_ZH : PROTOCOL_EN;
 }
 
 export type TelemetrySnapshot = {
@@ -283,12 +309,85 @@ export type TaskCompletionSnapshot = {
 	missingConditions: string[];
 };
 
+function isReadOnlyBashSegment(segment: string): boolean {
+	if (!segment) return false;
+	if (/^find\b/.test(segment) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/.test(segment)) return false;
+
+	return /^(?:pwd|command\s+-v\b|which\b|type\b|test\b|git\s+(?:status|diff|log|show)\b|git\s+branch\s+--show-current\b|npm\s+(?:list|view|config\s+get)\b|(?:ls|rg|grep|cat|head|tail|find|wc|sort|uniq)\b)/.test(segment);
+}
+
 function isReadOnlyBashCommand(command: string): boolean {
 	const normalized = command.trim();
-	if (!normalized || /[;&|`]|>>?|<|\$\(/.test(normalized)) return false;
-	if (/^find\b/.test(normalized) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/.test(normalized)) return false;
+	if (!normalized) return false;
+	if (/[;&`]|>>?|<|\$\(|\|\||&&/.test(normalized)) return false;
 
-	return /^(?:pwd|command\s+-v\b|which\b|type\b|test\b|git\s+(?:status|diff|log|show)\b|git\s+branch\s+--show-current\b|npm\s+(?:list|view|config\s+get)\b|(?:ls|rg|grep|cat|head|tail|find)\b)/.test(normalized);
+	const segments = normalized.split("|").map((segment) => segment.trim());
+	return segments.length > 0 && segments.every((segment) => isReadOnlyBashSegment(segment));
+}
+
+export function buildContractBlockReason(language: ProtocolLanguage = "en"): string {
+	if (language === "zh") {
+		return `[local-model-harness] 状态变更前需要先建立任务契约。请先调用 task_contract 工具，例如：
+task_contract({
+  intent: "<用户最终想要的结果>",
+  scope: ["<允许触碰的文件/资源>"],
+  doneWhen: ["<可观察的最终状态>"],
+  verificationPlan: ["<每个 doneWhen 对应的只读检查方法>"],
+  unresolved: []
+})
+契约建立后继续原来的操作即可。只读操作（read/grep/ls/git status 等）不需要契约。`;
+	}
+	return `[local-model-harness] Task contract required before state changes. Call the task_contract tool first, for example:
+task_contract({
+  intent: "<what the user ultimately wants>",
+  scope: ["<files/resources you may touch>"],
+  doneWhen: ["<observable end states>"],
+  verificationPlan: ["<read-only check for each doneWhen>"],
+  unresolved: []
+})
+Then continue with the original operation. Read-only actions (read/grep/ls/git status...) never need a contract.`;
+}
+
+export const CONTRACT_GATE_STEER_AFTER = 3;
+export const CONTRACT_GATE_NOTIFY_AFTER = 6;
+
+export type ContractGateEscalation = {
+	blocks: number;
+	steer: boolean;
+	notify: boolean;
+};
+
+export class ContractGate {
+	private blocks = 0;
+
+	constructor(
+		private readonly steerAfter: number = CONTRACT_GATE_STEER_AFTER,
+		private readonly notifyAfter: number = CONTRACT_GATE_NOTIFY_AFTER,
+	) {}
+
+	reset(): void {
+		this.blocks = 0;
+	}
+
+	get blockCount(): number {
+		return this.blocks;
+	}
+
+	recordBlock(): ContractGateEscalation {
+		this.blocks++;
+		return {
+			blocks: this.blocks,
+			steer: this.blocks === this.steerAfter,
+			notify: this.blocks === this.notifyAfter,
+		};
+	}
+}
+
+export function buildGateSteerMessage(blocks: number, language: ProtocolLanguage = "en"): string {
+	if (language === "zh") {
+		return `[local-model-harness] 本会话已有 ${blocks} 次状态变更调用因缺少任务契约被拦截。请立即调用 task_contract（intent/scope/doneWhen/verificationPlan/unresolved）建立契约，然后继续任务；不要再尝试绕过。只读操作不受影响。`;
+	}
+	return `[local-model-harness] ${blocks} state-changing calls have been blocked in this session for missing a task contract. Call task_contract now (intent/scope/doneWhen/verificationPlan/unresolved), then continue the task; do not try to work around the gate. Read-only actions are unaffected.`;
 }
 
 export function isStateChangingTool(toolName: string, input: Record<string, unknown>): boolean {

@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	ContextWatchdog,
+	ContractGate,
 	FileLeaseLock,
 	LoopGuard,
 	SessionTelemetry,
 	TaskCompletionLedger,
 	buildCodingProtocol,
+	buildContractBlockReason,
+	buildGateSteerMessage,
 	formatTaskCompletionReport,
 	formatTelemetryReport,
 	isManagedLocalModel,
@@ -43,6 +46,8 @@ function testConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfig {
 		watchdogThresholdPercent: 80,
 		loopGuardEnabled: true,
 		loopGuardWindow: 3,
+		protocolLanguage: "en",
+		gateEnabled: true,
 		...overrides,
 	};
 }
@@ -98,6 +103,7 @@ describe("loadHarnessConfig", () => {
 			models: ["model-a", "model-a", " model-b "],
 			contextWatchdog: { enabled: false, thresholdPercent: 70 },
 			loopGuard: { enabled: false, window: 4 },
+			protocolLanguage: "zh",
 		}));
 
 		const result = loadHarnessConfig(path);
@@ -110,6 +116,27 @@ describe("loadHarnessConfig", () => {
 		expect(result.config.watchdogThresholdPercent).toBe(70);
 		expect(result.config.loopGuardEnabled).toBe(false);
 		expect(result.config.loopGuardWindow).toBe(4);
+		expect(result.config.protocolLanguage).toBe("zh");
+	});
+
+	test("falls back to English protocol for unknown protocolLanguage values", async () => {
+		const path = await writeTempConfig(JSON.stringify({ models: ["model-a"], protocolLanguage: "fr" }));
+
+		const result = loadHarnessConfig(path);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.config.protocolLanguage).toBe("en");
+	});
+
+	test("honours gate.enabled=false as an escape hatch", async () => {
+		const path = await writeTempConfig(JSON.stringify({ models: ["model-a"], gate: { enabled: false } }));
+
+		const result = loadHarnessConfig(path);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.config.gateEnabled).toBe(false);
 	});
 });
 
@@ -127,11 +154,26 @@ describe("isManagedLocalModel", () => {
 
 describe("buildCodingProtocol", () => {
 	test("requires inspect, targeted verification, and an honest final report", () => {
-		const protocol = buildCodingProtocol();
+		const protocol = buildCodingProtocol("en");
 
 		expect(protocol).toContain("Read project instructions and relevant code before editing.");
 		expect(protocol).toContain("Run the smallest relevant verification after changes.");
 		expect(protocol).toContain("State clearly when verification was not run.");
+		expect(protocol).toContain("Reply to the user in the language the user is using.");
+	});
+
+	test("provides a semantically equivalent Chinese protocol", () => {
+		const protocol = buildCodingProtocol("zh");
+
+		expect(protocol).toContain("## 本地编码协议");
+		expect(protocol).toContain("编辑前先阅读项目说明和相关代码。");
+		expect(protocol).toContain("修改后运行最小相关验证。");
+		expect(protocol).toContain("没有运行验证时必须明确说明。");
+		expect(protocol).toContain("用用户使用的语言回复。");
+	});
+
+	test("defaults to English", () => {
+		expect(buildCodingProtocol()).toContain("## Local Coding Protocol");
 	});
 });
 
@@ -205,6 +247,7 @@ describe("SessionTelemetry", () => {
 		expect(report).toContain("Model: test-model-7b");
 		expect(report).toContain("Duration: 1m 5s");
 		expect(report).toContain("Provider requests: 3");
+		expect(report).toContain("Lock wait: 125ms");
 		expect(report).toContain("Changed files: src/auth.ts");
 		expect(report).toContain("Verification: pending (1 changed file)");
 		expect(report).toContain("Context peak: 48%");
@@ -289,6 +332,17 @@ describe("TaskCompletionLedger", () => {
 		expect(isStateChangingTool("bash", { command: "find . -name '*.ts'" })).toBe(false);
 		expect(isStateChangingTool("bash", { command: "find . -delete" })).toBe(true);
 		expect(isStateChangingTool("bash", { command: "touch /tmp/side-effect" })).toBe(true);
+	});
+
+	test("treats read-only pipelines as safe and mixed pipelines as state-changing", () => {
+		expect(isStateChangingTool("bash", { command: "git status --short | head -30" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "find . -maxdepth 2 | head -80" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "ls -R src | grep test | wc -l" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "cat foo > bar" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "git status; rm -rf /tmp/x" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "ls || rm fallback" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "ls && rm something" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "find . | xargs rm" })).toBe(true);
 	});
 
 	test("requires a contract before a state-changing tool call", () => {
@@ -400,6 +454,53 @@ describe("LoopGuard", () => {
 		expect(toolCallSignature("bash", { command: "npm test" })).toBe("bash:npm test");
 		expect(toolCallSignature("edit", { path: "src/a.ts" })).toBe("edit:src/a.ts");
 		expect(toolCallSignature("task_verify", { condition: "done" })).toBe('task_verify:{"condition":"done"}');
+	});
+});
+
+describe("ContractGate", () => {
+	test("escalates at the third and sixth block", () => {
+		const gate = new ContractGate();
+
+		expect(gate.recordBlock()).toEqual({ blocks: 1, steer: false, notify: false });
+		expect(gate.recordBlock()).toEqual({ blocks: 2, steer: false, notify: false });
+		expect(gate.recordBlock()).toEqual({ blocks: 3, steer: true, notify: false });
+		expect(gate.recordBlock()).toEqual({ blocks: 4, steer: false, notify: false });
+		expect(gate.recordBlock()).toEqual({ blocks: 5, steer: false, notify: false });
+		expect(gate.recordBlock()).toEqual({ blocks: 6, steer: false, notify: true });
+	});
+
+	test("resets after a contract is established", () => {
+		const gate = new ContractGate();
+
+		gate.recordBlock();
+		gate.recordBlock();
+		gate.reset();
+		expect(gate.blockCount).toBe(0);
+		expect(gate.recordBlock()).toEqual({ blocks: 1, steer: false, notify: false });
+	});
+});
+
+describe("buildContractBlockReason", () => {
+	test("identifies the harness and shows a contract example", () => {
+		const reason = buildContractBlockReason("en");
+
+		expect(reason).toContain("[local-model-harness]");
+		expect(reason).toContain("task_contract");
+		expect(reason).toContain("doneWhen");
+		expect(reason).toContain("Read-only actions");
+	});
+
+	test("provides a Chinese version", () => {
+		const reason = buildContractBlockReason("zh");
+
+		expect(reason).toContain("[local-model-harness]");
+		expect(reason).toContain("任务契约");
+		expect(reason).toContain("只读操作");
+	});
+
+	test("steer message reports the block count", () => {
+		expect(buildGateSteerMessage(3, "en")).toContain("3 state-changing calls");
+		expect(buildGateSteerMessage(3, "zh")).toContain("3 次状态变更调用");
 	});
 });
 

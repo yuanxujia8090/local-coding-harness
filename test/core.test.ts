@@ -378,6 +378,18 @@ describe("TaskCompletionLedger", () => {
 		expect(isStateChangingTool("bash", { command: "find . -name '*.test.js' | head -5; cat package.json" })).toBe(false);
 		expect(isStateChangingTool("bash", { command: "git status; rm -rf /tmp/x" })).toBe(true);
 		expect(isStateChangingTool("bash", { command: "ls *.js; cat package.json" })).toBe(false);
+
+		// Compound loops / conditionals: body must be read-only.
+		expect(isStateChangingTool("bash", { command: "for f in *.txt; do head -1 \"$f\"; done" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "for d in /path/*/; do name=$(basename \"$d\"); echo \"$name\"; done" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "for f in *.txt; do head -1 \"$f\"; done; echo all-done" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "while read -r line; do echo \"$line\"; done < config.txt" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "if test -f x; then echo exists; fi" })).toBe(false);
+
+		// Compound blocks with a write inside must stay state-changing.
+		expect(isStateChangingTool("bash", { command: "for f in *.txt; do rm \"$f\"; done" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "for f in $(rm -rf x); do echo ok; done" })).toBe(true);
+		expect(isStateChangingTool("bash", { command: "for f in *.txt; do echo hi > /tmp/out; done" })).toBe(true);
 	});
 
 	test("requires a contract before a state-changing tool call", () => {

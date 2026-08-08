@@ -154,7 +154,23 @@ npm test          # vitest
 npm run typecheck # tsc --noEmit
 ```
 
-核心逻辑在 `src/core.ts`（纯逻辑，零 pi 依赖），每个机制都可单元测试；`index.ts` 是 pi 接线层。
+核心逻辑是纯 TypeScript，零 pi 依赖，按职责拆分在 `src/` 下各文件，每个机制保持可单元测试；`src/core.ts` 是桶文件（barrel），只负责 re-export 公共接口；`index.ts` 是 pi 接线层：
+
+```
+src/
+├── config.ts      配置加载、默认值、受管模型识别
+├── protocol.ts    本地编码协议文本（en/zh）
+├── session.ts     会话 telemetry + 验证命令识别
+├── shell.ts       bash 结构化只读分析
+├── gate.ts        契约门禁（拦截 + 升级引导）
+├── ledger.ts      任务契约/证据台账 + 报表格式化
+├── lock.ts        文件租约锁 + 模型 tool-call 探针
+├── loop.ts        Loop Guard
+├── quality.ts     空响应 / 空参工具调用监控
+├── readguard.ts   先读后改守卫
+├── watchdog.ts    Context Watchdog 压缩
+└── core.ts        re-export 公共表面
+```
 
 ## 许可证
 

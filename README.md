@@ -147,7 +147,23 @@ npm test          # vitest
 npm run typecheck # tsc --noEmit
 ```
 
-Core logic lives in `src/core.ts` (pure, no pi imports) so every mechanism is unit-testable; `index.ts` is the pi wiring.
+Core logic is pure TypeScript with zero pi imports, split per concern under `src/` so every mechanism stays unit-testable; `src/core.ts` is a barrel that re-exports them and `index.ts` is the pi wiring:
+
+```
+src/
+├── config.ts      config loading, defaults, managed-model detection
+├── protocol.ts    local coding protocol text (en/zh)
+├── session.ts     session telemetry + verification-command detection
+├── shell.ts       structural bash read-only analysis
+├── gate.ts        contract gate (blocking + escalation)
+├── ledger.ts      task contract/evidence ledger + report formatting
+├── lock.ts        file-lease lock + model tool-call probe
+├── loop.ts        loop guard
+├── quality.ts     empty response / empty tool-call monitor
+├── readguard.ts   require-read-before-edit guard
+├── watchdog.ts    context compaction watchdog
+└── core.ts        re-exports the public surface
+```
 
 ## License
 

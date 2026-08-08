@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
 	ContextWatchdog,
 	ContractGate,
 	FileLeaseLock,
 	LoopGuard,
 	QualityMonitor,
+	ReadGuard,
 	SessionTelemetry,
 	TaskCompletionLedger,
 	assessResponseQuality,
@@ -50,6 +51,7 @@ function testConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfig {
 		loopGuardWindow: 3,
 		protocolLanguage: "en",
 		gateEnabled: true,
+		readGuardEnabled: false,
 		...overrides,
 	};
 }
@@ -524,6 +526,42 @@ describe("QualityMonitor", () => {
 		expect(monitor.snapshot()).toEqual({ emptyResponses: 1, emptyToolCalls: 1 });
 		monitor.reset();
 		expect(monitor.snapshot()).toEqual({ emptyResponses: 0, emptyToolCalls: 0 });
+	});
+});
+
+describe("ReadGuard", () => {
+	test("blocks an edit of a file that was not read first", () => {
+		const guard = new ReadGuard();
+		guard.recordRead("read", { path: "src/other.ts" });
+
+		const result = guard.needsReadForEdit("edit", { path: "src/target.ts" });
+		expect(result).toBeTruthy();
+	});
+
+	test("allows an edit after the file was read", () => {
+		const guard = new ReadGuard();
+		guard.recordRead("read", { path: "src/target.ts" });
+
+		expect(guard.needsReadForEdit("edit", { path: "src/target.ts" })).toBeNull();
+	});
+
+	test("normalises relative and absolute paths", () => {
+		const guard = new ReadGuard();
+		guard.recordRead("read", { path: "src/a.ts" });
+
+		expect(guard.needsReadForEdit("edit", { path: resolve("src/a.ts") })).toBeNull();
+	});
+
+	test("does not guard when a path is missing", () => {
+		const guard = new ReadGuard();
+		guard.recordRead("read", { path: "src/a.ts" });
+		expect(guard.needsReadForEdit("edit", {})).toBeNull();
+	});
+
+	test("only read tools record files", () => {
+		const guard = new ReadGuard();
+		guard.recordRead("bash", { command: "ls src/" });
+		expect(guard.readFilesCount()).toBe(0);
 	});
 });
 

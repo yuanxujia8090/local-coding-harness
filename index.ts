@@ -11,6 +11,7 @@ import {
 	SessionTelemetry,
 	TaskCompletionLedger,
 	LoopGuard,
+	ReadGuard,
 	assessResponseQuality,
 	defaultConfigPath,
 	formatDuration,
@@ -118,6 +119,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	let loopGuard = new LoopGuard(config.loopGuardWindow);
 	let watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 	let contractGate = new ContractGate();
+	let readGuard = new ReadGuard();
 	let unverifiedWarningShown = false;
 	let taskFollowUpShown = false;
 	let lastInjectedBlock: string | undefined;
@@ -275,6 +277,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		loopGuard = new LoopGuard(config.loopGuardWindow);
 		watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 		contractGate = new ContractGate();
+		readGuard = new ReadGuard();
 		unverifiedWarningShown = false;
 		taskFollowUpShown = false;
 		lastInjectedBlock = undefined;
@@ -331,6 +334,22 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 				reason: buildContractBlockReason(config.protocolLanguage),
 			};
 		}
+
+		readGuard.recordRead(event.toolName, event.input);
+		if (config.readGuardEnabled) {
+			const unreadPath = readGuard.needsReadForEdit(event.toolName, event.input);
+			if (unreadPath) {
+				pi.sendUserMessage(
+					`[local-model-harness] You are editing ${unreadPath} without having read it first. Read the file (read tool) so the edit is based on the actual current content, then retry the ${event.toolName}.`,
+					{ deliverAs: "steer" },
+				);
+				return {
+					block: true,
+					reason: `Read ${unreadPath} before editing it.`,
+				};
+			}
+		}
+
 		taskLedger.recordToolCall(event.toolCallId, event.toolName, event.input);
 	});
 

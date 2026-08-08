@@ -8,5 +8,8 @@
 	"loopGuard": {
 		"enabled": true,
 		"window": 3
+	},
+	"readGuard": {
+		"enabled": false
 	}
 }

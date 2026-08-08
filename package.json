@@ -1,6 +1,6 @@
 {
 	"name": "local-model-harness",
-	"version": "0.2.2",
+	"version": "0.2.3",
 	"description": "Thin coding harness for pi + local models: work protocol, provider lock, telemetry, task completion ledger, context watchdog, loop guard.",
 	"main": "index.ts",
 	"pi": {

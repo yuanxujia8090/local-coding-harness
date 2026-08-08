@@ -15,6 +15,8 @@ pi 原生 agent loop
   +-- Task Completion Ledger       契约 -> 证据 -> doneWhen；拦截无证据的"完成"
   +-- Context Watchdog             窗口打满前提前压缩
   +-- Loop Guard                   把模型从完全相同的重复调用中拉出来
+  +-- Quality Monitor              检测空响应 / 空参数工具调用并纠正（v0.2.2）
+  +-- Read Guard                   编辑前未读先拦（v0.2.3，默认关）
 ```
 
 ## 为什么要给本地模型做 harness
@@ -24,6 +26,8 @@ pi 原生 agent loop
 - **"命令跑成功了，所以任务完成了。"** 工具调用成功只是局部事实，不能证明用户目标已达成。任务账本要求模型先声明完成条件（`task_contract`），并为每个条件附上真实的只读证据（`task_verify`），之后 `task_complete` 才会被接受。
 - **跳过验证。** 编辑会把会话标记为"未验证"；只有成功执行被识别的验证命令（`npm test`、`pytest`、`cargo test`、`tsc`……）才会清除。带着未验证变更结算会产生可见提醒。
 - **反复重试直到卡死。** Loop guard 检测同一调用连续出现 N 次，并引导模型换思路。
+- **空响应 / 空参数工具调用。** 较小或劣化的模型偶尔会输出空内容，或带空参的工具调用。quality monitor 会同时记账并纠正该回合。
+- **编辑从未读过的文件。** 罕见但真实：模型把内容幻想到未知文件里。read guard（可选，默认关）会拦住无先验 `read` 的 `edit`/`write`，并引导模型先读。
 - **上下文压力。** 本地服务器重放长历史很慢，小模型在接近满窗时召回能力衰减。Watchdog 提前压缩（默认 80%）并带防压缩循环保护；协议/任务状态在压缩后自动重新注入。
 - **多进程 GPU 争抢。** 多个 pi 会话同时请求同一个本地服务会争抢显存/内存。文件租约锁在加载本扩展的 pi 进程之间串行化受管模型请求。等待中的会话会在 working 指示器上显示 `waiting for model slot (held by pid N, Xm Ys)`，等待超过 5 秒弹出通知；进程死亡留下的遗留锁会自动清理。
 
@@ -73,6 +77,9 @@ pi 原生 agent loop
   "protocolLanguage": "en",            // 可选："en"（默认）或 "zh"
   "gate": {                            // 可选
     "enabled": true                    // 默认 true；false 完全关闭契约门禁
+  },
+  "readGuard": {                       // 可选；默认关
+    "enabled": false                   // edit/write 该路径前必须先 read
   }
 }
 ```
@@ -124,12 +131,20 @@ Loop interventions: 0                                <- 模型被转向提醒的
 - **Watchdog 暂停机制。** 如果压缩后使用率仍高于阈值，watchdog 会暂停而不是反复触发注定失败的压缩；使用率明显回落后自动恢复。pi 自身的接近溢出压缩仍是最后兜底。
 - **Loop guard 只引导、不拦截。** 重复调用可能是合理的（如轮询）；guard 对每个重复签名只注入一次纠偏消息，并把干预次数记入 telemetry。
 - **保守的 bash 分类。** 未知 bash 命令按状态变更处理。不断增长的白名单比不断增长的黑名单更少误判副作用。
+- **证据优先。** 每个机制都在上基准实测后再上线。验证节奏（v0.2.1）修掉一个真实死锁（t2 errors 27→0）；quality monitor 与 read guard 针对罕见但真实的失败模式，默认关闭或最小化。
 
 ## 限制
 
 - Provider 锁只协调加载了本扩展的 pi 进程。
 - 只读 bash 白名单刻意保持很小；其余命令一律要求契约。
 - Telemetry 按会话内存记录（结算/报告时持久化为会话条目），不是跨会话数据库。
+
+## 版本历史
+
+- **v0.2.3** Read Guard：`edit`/`write` 一个从未 `read` 过的路径会被拦截并引导（默认关，`readGuard.enabled: true` 开启）。防御型机制（bench 仅 1 轮 2 次无先读的 edit）。
+- **v0.2.2** Quality Monitor：检测空响应（empty responses）与空参数工具调用（empty tool calls），计入 telemetry 并引导该回合。
+- **v0.2.1** 验证节奏死锁修复：`&&`/`||`/`!`/`;` 链、测试命令（`node test.js`、`npm test`…）识别为只读；一次只读结果可支撑多个完成条件。t2 errors 27→0。
+- **v0.2.0** 契约门禁、Context Watchdog、Loop Guard、中文协议。
 
 ## 开发
 

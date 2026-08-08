@@ -15,6 +15,8 @@ pi native agent loop
   +-- Task Completion Ledger       contract -> evidence -> doneWhen; blocks unevidenced "done"
   +-- Context Watchdog             early compaction before the window fills up
   +-- Loop Guard                   steers the model out of identical repeated calls
+  +-- Quality Monitor              detects empty responses / empty-arg tool calls and steers
+  +-- Read Guard                   blocks edits without a prior read (opt-in)
 ```
 
 ## Why a harness for local models
@@ -26,6 +28,8 @@ Frontier-model harnesses assume the model rarely breaks tool-call format, follow
 - **Repeat-until-stuck loops.** The loop guard detects the same call N times in a row and steers the model to change approach.
 - **Context pressure.** Local servers re-read long histories slowly and small-model recall degrades near a full window. The watchdog compacts early (default 80%) with a loop guard, and protocol/task state is re-injected after compaction.
 - **Multi-process GPU contention.** Several pi sessions talking to one local server fight over memory. A file-lease lock serializes managed-model requests across pi processes that load this extension. Waiting sessions show `waiting for model slot (held by pid N, Xm Ys)` in the working indicator and get a notification after 5 seconds; stale locks from dead processes are cleaned up automatically.
+- **Empty responses / empty-arg tool calls.** Smaller or degraded models occasionally reply with no content or a tool call missing arguments. The quality monitor flags both in telemetry and steers the turn.
+- **Editing a file that was never read.** Rare, but when it happens a model is hallucinating content into an unknown file. The read guard (opt-in; off by default) blocks `edit`/`write` on a path that has no prior `read`, and nudges the model to read first.
 
 ## What this is not
 
@@ -73,6 +77,9 @@ Create `~/.pi/agent/local-model-harness.json` listing the models the harness sho
   "protocolLanguage": "en",            // optional: "en" (default) or "zh"
   "gate": {                            // optional
     "enabled": true                    // default true; false disables the contract gate entirely
+  },
+  "readGuard": {                       // optional; default OFF
+    "enabled": false                   // require a prior read before edit/write on that path
   }
 }
 ```
@@ -124,6 +131,7 @@ Read-only exploration (`read`, `grep`, `find`, `ls`, and known read-only bash li
 - **Watchdog pause.** If compaction doesn't bring usage below the threshold, the watchdog pauses instead of firing doomed compactions, and resumes once usage drops clearly. pi's own near-overflow compaction still applies as a backstop.
 - **Loop guard steers, never blocks.** Repetition can be legitimate (polling); the guard injects a corrective nudge once per repeated signature and records the intervention in telemetry.
 - **Conservative bash classification.** Unknown bash commands are treated as state-changing. A growing whitelist guesses fewer side effects than a growing blacklist.
+- **Evidence-first mechanisms.** Every mechanism was validated against benchmark transcripts before shipping. Verification pacing (v0.2.1) fixed a real deadlock (t2 errors 27→0); quality monitor and read guard defend against rare/rare-but-real failure modes and are off or minimal by default.
 
 ## Limitations
 

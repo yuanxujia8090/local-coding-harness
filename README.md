@@ -76,7 +76,8 @@ Create `~/.pi/agent/local-model-harness.json` listing the models the harness sho
   },
   "protocolLanguage": "en",            // optional: "en" (default) or "zh"
   "gate": {                            // optional
-    "enabled": true                    // default true; false disables the contract gate entirely
+    "enabled": true,                   // default true; false disables the contract gate entirely
+    "readOnlyTools": ["shepherd_rules"] // third-party tools that are read-only
   },
   "readGuard": {                       // optional; default OFF
     "enabled": false                   // require a prior read before edit/write on that path
@@ -130,7 +131,7 @@ Read-only exploration (`read`, `grep`, `find`, `ls`, and known read-only bash li
 - **KV-cache-friendly injection.** Protocol, verification state, and task state are injected as a trailing custom message (not a system-prompt rewrite), so the cached prefix on your local server stays valid. The block is deduplicated and re-injected after compaction.
 - **Watchdog pause.** If compaction doesn't bring usage below the threshold, the watchdog pauses instead of firing doomed compactions, and resumes once usage drops clearly. pi's own near-overflow compaction still applies as a backstop.
 - **Loop guard steers, never blocks.** Repetition can be legitimate (polling); the guard injects a corrective nudge once per repeated signature and records the intervention in telemetry.
-- **Conservative bash classification.** Unknown bash commands are treated as state-changing. A growing whitelist guesses fewer side effects than a growing blacklist.
+- **Conservative bash classification.** A command is treated as state-changing only when it writes structurally — redirects (`>`, `>>`), known destructive commands (`rm`, `mv`, `git commit`, package installs), or arbitrary script execution. Everything else is read-only by default, so exploration chains, loops, and inline scripts are never gated without reason.
 - **Evidence-first mechanisms.** Every mechanism was validated against benchmark transcripts before shipping. Verification pacing (v0.2.1) fixed a real deadlock (t2 errors 27→0); quality monitor and read guard defend against rare/rare-but-real failure modes and are off or minimal by default.
 
 ## Limitations

@@ -51,6 +51,7 @@ function testConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfig {
 		loopGuardWindow: 3,
 		protocolLanguage: "en",
 		gateEnabled: true,
+		gateExtraReadOnlyTools: [],
 		readGuardEnabled: false,
 		...overrides,
 	};
@@ -390,6 +391,22 @@ describe("TaskCompletionLedger", () => {
 		expect(isStateChangingTool("bash", { command: "for f in *.txt; do rm \"$f\"; done" })).toBe(true);
 		expect(isStateChangingTool("bash", { command: "for f in $(rm -rf x); do echo ok; done" })).toBe(true);
 		expect(isStateChangingTool("bash", { command: "for f in *.txt; do echo hi > /tmp/out; done" })).toBe(true);
+
+		// Regression (session 019fdf33): read-only operations that were
+		// misclassified as state-changing and gated without reason.
+		expect(isStateChangingTool("bash", { command: "echo \"=== A ===\" && ls /Users/x/.pi/agent/skills/ 2>/dev/null && echo \"\" && ls /Users/x/.agents/skills/ 2>/dev/null" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "find /Users/x/.agents -maxdepth 2 -name \"SKILL.md\" -o -name \"*.skill\" 2>/dev/null | sort && cat /Users/x/rules.json 2>/dev/null" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "python3 -c \"\nimport json\nwith open('/Users/x/rules.json') as f:\n    rules = json.load(f)\nprint(len(rules))\n\" 2>/dev/null" })).toBe(false);
+		expect(isStateChangingTool("bash", { command: "for skill_dir in /Users/x/skills/*/; do name=$(basename \"$skill_dir\"); md=\"$skill_dir/SKILL.md\"; if [ -f \"$md\" ]; then head -1 \"$md\"; fi; done" })).toBe(false);
+	});
+
+	test("treats non-bash tools as read-only by default and honors extra read-only tools", () => {
+		// Third-party read-only tools (e.g. shepherd_rules) default to read-only.
+		expect(isStateChangingTool("shepherd_rules", { action: "list", verbose: true })).toBe(false);
+		expect(isStateChangingTool("shepherd_rules", { action: "list" }, new Set(["shepherd_rules"]))).toBe(false);
+		// Known write tools remain state-changing.
+		expect(isStateChangingTool("edit", { path: "README.md" })).toBe(true);
+		expect(isStateChangingTool("write", { path: "x.md" })).toBe(true);
 	});
 
 	test("requires a contract before a state-changing tool call", () => {
@@ -398,6 +415,15 @@ describe("TaskCompletionLedger", () => {
 		expect(ledger.needsContractFor("bash", { command: "npm uninstall -g example-tool" })).toBe(true);
 		expect(ledger.setContract(contract).ok).toBe(true);
 		expect(ledger.needsContractFor("bash", { command: "npm uninstall -g example-tool" })).toBe(false);
+	});
+
+	test("honors configured extra read-only tool names in the ledger", () => {
+		const ledger = new TaskCompletionLedger(new Set(["shepherd_rules"]));
+
+		expect(ledger.needsContractFor("shepherd_rules", { action: "list" })).toBe(false);
+		expect(ledger.needsContractFor("bash", { command: "git status" })).toBe(false);
+		expect(ledger.needsContractFor("bash", { command: "git commit -m x" })).toBe(true);
+		expect(ledger.needsContractFor("write", { path: "x.md" })).toBe(true);
 	});
 
 	test("rejects a completion claim when a condition lacks successful evidence", () => {

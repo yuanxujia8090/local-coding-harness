@@ -9,6 +9,10 @@
 		"enabled": true,
 		"window": 3
 	},
+	"gate": {
+		"enabled": true,
+		"readOnlyTools": ["shepherd_rules"]
+	},
 	"readGuard": {
 		"enabled": false
 	}

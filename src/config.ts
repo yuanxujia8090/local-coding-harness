@@ -21,6 +21,7 @@ export type HarnessConfig = {
 	loopGuardWindow: number;
 	protocolLanguage: ProtocolLanguage;
 	gateEnabled: boolean;
+	gateExtraReadOnlyTools: string[];
 	readGuardEnabled: boolean;
 };
 
@@ -96,6 +97,9 @@ export function loadHarnessConfig(path: string = defaultConfigPath()): ConfigLoa
 
 	const gate = readSection(root.gate);
 	const gateEnabled = typeof gate.enabled === "boolean" ? gate.enabled : true;
+	const gateExtraReadOnlyTools = Array.isArray(gate.readOnlyTools)
+		? gate.readOnlyTools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0)
+		: [];
 
 	const readGuardConfig = readSection(root.readGuard);
 	const readGuardEnabled = typeof readGuardConfig.enabled === "boolean" ? readGuardConfig.enabled : false;
@@ -113,6 +117,7 @@ export function loadHarnessConfig(path: string = defaultConfigPath()): ConfigLoa
 			loopGuardWindow,
 			protocolLanguage,
 			gateEnabled,
+			gateExtraReadOnlyTools,
 			readGuardEnabled,
 		},
 	};

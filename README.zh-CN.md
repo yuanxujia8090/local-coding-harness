@@ -76,7 +76,8 @@ pi 原生 agent loop
   },
   "protocolLanguage": "en",            // 可选："en"（默认）或 "zh"
   "gate": {                            // 可选
-    "enabled": true                    // 默认 true；false 完全关闭契约门禁
+    "enabled": true,                   // 默认 true；false 完全关闭契约门禁
+    "readOnlyTools": ["shepherd_rules"] // 第三方只读工具名（仅读，不需契约）
   },
   "readGuard": {                       // 可选；默认关
     "enabled": false                   // edit/write 该路径前必须先 read
@@ -130,7 +131,7 @@ Loop interventions: 0                                <- 模型被转向提醒的
 - **KV cache 友好注入。** 协议、验证状态、任务状态以尾部自定义消息注入（而非改写 system prompt），让你本地服务器上的缓存前缀保持有效。注入块带去重，压缩后自动重新注入。
 - **Watchdog 暂停机制。** 如果压缩后使用率仍高于阈值，watchdog 会暂停而不是反复触发注定失败的压缩；使用率明显回落后自动恢复。pi 自身的接近溢出压缩仍是最后兜底。
 - **Loop guard 只引导、不拦截。** 重复调用可能是合理的（如轮询）；guard 对每个重复签名只注入一次纠偏消息，并把干预次数记入 telemetry。
-- **保守的 bash 分类。** 未知 bash 命令按状态变更处理。不断增长的白名单比不断增长的黑名单更少误判副作用。
+- **保守的 bash 分类。** 只有当命令结构性地写入时才按状态变更处理——重定向（`>`、`>>`）、已知破坏性命令（`rm`、`mv`、`git commit`、包安装）、或执行任意脚本。其余默认只读，因此探索链、循环、内联脚本不会被无端拦截。
 - **证据优先。** 每个机制都在上基准实测后再上线。验证节奏（v0.2.1）修掉一个真实死锁（t2 errors 27→0）；quality monitor 与 read guard 针对罕见但真实的失败模式，默认关闭或最小化。
 
 ## 限制

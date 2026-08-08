@@ -40,6 +40,8 @@ export class TaskCompletionLedger {
 	private nextToolCallOrder = 0;
 	private lastMutationOrder = 0;
 
+	constructor(private readonly extraReadOnlyTools: ReadonlySet<string> = new Set()) {}
+
 	setContract(contract: TaskContract): { ok: boolean; reason?: string } {
 		const normalized = {
 			intent: contract.intent.trim(),
@@ -63,11 +65,11 @@ export class TaskCompletionLedger {
 	}
 
 	needsContractFor(toolName: string, input: Record<string, unknown>): boolean {
-		return !this.contract && isStateChangingTool(toolName, input);
+		return !this.contract && isStateChangingTool(toolName, input, this.extraReadOnlyTools);
 	}
 
 	recordToolCall(toolCallId: string, toolName: string, input: Record<string, unknown>): void {
-		const isStateChanging = isStateChangingTool(toolName, input);
+		const isStateChanging = isStateChangingTool(toolName, input, this.extraReadOnlyTools);
 		const order = ++this.nextToolCallOrder;
 		this.toolCalls.set(toolCallId, { toolName, isStateChanging, order, succeeded: false });
 		if (isStateChanging) {

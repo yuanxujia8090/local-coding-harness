@@ -115,7 +115,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	const lock = new FileLeaseLock(config.lockPath);
 	let lockHeld = false;
 	let telemetry = new SessionTelemetry();
-	let taskLedger = new TaskCompletionLedger();
+	let taskLedger = new TaskCompletionLedger(new Set(config.gateExtraReadOnlyTools));
 	let loopGuard = new LoopGuard(config.loopGuardWindow);
 	let watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 	let contractGate = new ContractGate();
@@ -273,7 +273,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		telemetry = new SessionTelemetry(modelLabel(ctx));
-		taskLedger = new TaskCompletionLedger();
+		taskLedger = new TaskCompletionLedger(new Set(config.gateExtraReadOnlyTools));
 		loopGuard = new LoopGuard(config.loopGuardWindow);
 		watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 		contractGate = new ContractGate();

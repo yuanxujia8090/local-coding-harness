@@ -153,37 +153,46 @@ function isReadOnlyBashSegment(segment: string): boolean {
 	if (!stripped) return false;
 
 	if (/^true\b/.test(stripped) || /^:\s*$/.test(stripped)) return true;
-	if (/^(?:npm|npx|pnpm|yarn)\s+(?:test|t|run\s+test|list|view|config\s+get|info)\b/.test(stripped)) return true;
-	if (/^(?:node|bun)\s+\S*(?:test|spec)\S*\.(?:js|mjs|cjs|ts|mts|cts)\b/.test(stripped)) return true;
-	if (/^(?:node|bun)\s+.*\b--test\b/.test(stripped)) return true;
+
+	// Write-by-design commands. These change state even without a redirect,
+	// mirroring little-coder's write-detection philosophy: code detects writes
+	// structurally instead of whitelisting read-only command names.
+	if (/^(?:cp|mv|rm|rmdir|touch|mkdir|mkdirp|install|ln|chmod|chown|truncate|unlink|tee|dd|tar|zip|unzip|gzip|bzip2|xz)\b/.test(stripped)) return false;
+	if (/^sed\s+-i\b/.test(stripped)) return false;
 	if (/^find\b/.test(stripped) && /-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/.test(stripped)) return false;
+	if (/^xargs\b/.test(stripped) && /\b(?:rm|mv|cp|touch|mkdir|ln|sed)\s+-i\b/.test(stripped)) return false;
+	if (/^xargs\b/.test(stripped) && /\b(?:rm|mv|cp|touch|rmdir|mkdir)\b/.test(stripped)) return false;
 
-	// Pure-write commands: never read-only regardless of other args.
-	if (/^(?:cp|mv|rm|rmdir|touch|mkdir|mkdirp|install|ln|chmod|chown|truncate|unlink|tee|dd|tar|zip|unzip|gzip|bzip2|xz|sed)\s+-i\b/.test(stripped)) return false;
+	if (/^(?:git)\s+(?:add|commit|rm|mv|reset|checkout|push|pull|merge|rebase|stash|clean|restore|switch|apply|archive|format-patch)\b/.test(stripped)) return false;
+	if (/^(?:curl|wget)\s+(?:-o|--output|-O)\b/.test(stripped)) return false;
+	if (/^(?:npm|npx|pnpm|yarn)\s+(?:install|i|add|remove|rm|uninstall|update|upgrade|init|publish|link|dedupe)\b/.test(stripped)) return false;
+	if (/^(?:apt|apt-get|brew|pip|pip3|conda)\s+(?:install|remove|purge|update|upgrade|uninstall)\b/.test(stripped)) return false;
 
-	// fd plumbing (`2>&1`, `2>/dev/null`) and `/dev/null` redirects never write
-	// a real file — normalize them away, then any residual unquoted `>` means
-	// the segment writes a real file.
+	// Executing an arbitrary script may change state. Verification-only runs
+	// (`node test.js`, `bun --test`) are the exception and stay read-only.
+	if (/^(?:node|bun)\b/.test(stripped)) {
+		if (/\b--test\b|\S*(?:test|spec)\S*\.(?:js|mjs|cjs|ts|mts|cts)\b/.test(stripped)) return true;
+		return false;
+	}
+
+	// fd plumbing (`2>&1`, `/dev/null` redirects) and input redirection
+	// (`< file`) never write a real file — normalize them away, then any
+	// residual unquoted `>` means the segment writes a real file.
 	const line = stripHeredocBodies(stripped)
 		.replace(/[12]>(?:&[12]|\/dev\/(?:null|stdout|stderr|stdin|tty|zero|full|random|urandom))/g, " ")
-		.replace(/>\s*\/dev\/(?:null|stdout|stderr|stdin|tty|zero|full|random|urandom)/g, " ");
+		.replace(/>\s*\/dev\/(?:null|stdout|stderr|stdin|tty|zero|full|random|urandom)/g, " ")
+		.replace(/[0-9]*<\s*(?:&[0-9]+|[^\s>=;|&]+)/g, " ");
 	let writes = false;
 	shellScan(line, (ch, _i, quoted) => {
-		if (!quoted && ch === ">") writes = true;
+		if (!quoted && (ch === ">" || ch === "<")) writes = true;
 	});
 	if (writes) return false;
 
-	// Input redirections (`< file`, `<< EOF`, `<<< str`) read, never write.
-	// If a segment is nothing but an input redirect, it is read-only.
-	const noInput = line.replace(/[0-9]*<\s*(?:&[0-9]+|[^\s>=;|&]+)/g, " ").trim();
-	if (noInput === "") return true;
-
-	if (/<<\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(stripped)) return false;
-
-	if (/^(?:git\s+(?:add|commit|rm|mv|reset|checkout|push|pull|merge|rebase|stash|clean|restore|switch|apply|archive|format-patch)\b)/.test(stripped)) return false;
-	if (/^(?:curl|wget)\s+(?:-o|--output|-O)\b/.test(stripped)) return false;
-
-	return /^(?:pwd|command\s+-v\b|which\b|type\b|test\b|\[(?:[^]]*\]|$)|echo\b|printf\b|stat\b|dirname\b|basename\b|realpath\b|readlink\b|read\b|git\s+(?:status|diff|log|show|blame|rev-parse|branch\s+--show-current)\b|npm\s+(?:list|view|config\s+get)\b|(?:ls|rg|grep|cat|head|tail|find|wc|sort|uniq|cut|tr)\b)/.test(stripped);
+	// Anything without a detectable file write is treated as read-only — a
+	// deliberately permissive default. Commands like `python3 -c`, `for` loops,
+	// and chains that merely print/read are let through; destructive commands
+	// are caught by the structural checks above rather than by name.
+	return true;
 }
 
 /**
@@ -263,9 +272,22 @@ function isReadOnlyBashCommand(command: string, depth = 0): boolean {
 }
 
 /** Read-only tool names never need a contract; anything else (edit/write/bash
- *  with a state-changing command, etc.) does. */
-export function isStateChangingTool(toolName: string, input: Record<string, unknown>): boolean {
+ *  with a state-changing command, etc.) does. `extraReadOnlyTools` extends the
+ *  built-in set with third-party read-only tool names (e.g. shepherd_rules).
+ *  Only known write tools are always state-changing; unknown tools default to
+ *  read-only so the gate never blocks a tool it cannot classify. */
+export function isStateChangingTool(
+	toolName: string,
+	input: Record<string, unknown>,
+	extraReadOnlyTools: ReadonlySet<string> = EMPTY_SET,
+): boolean {
 	if (["read", "grep", "find", "ls", "task_contract", "task_verify", "task_complete"].includes(toolName)) return false;
-	if (toolName !== "bash") return true;
-	return typeof input.command !== "string" || !isReadOnlyBashCommand(input.command);
+	if (extraReadOnlyTools.has(toolName)) return false;
+	if (["edit", "write", "patch", "bash"].includes(toolName)) {
+		if (toolName === "bash") return typeof input.command !== "string" || !isReadOnlyBashCommand(input.command);
+		return true;
+	}
+	return false;
 }
+
+const EMPTY_SET: ReadonlySet<string> = new Set();

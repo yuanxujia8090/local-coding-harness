@@ -330,45 +330,45 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	});
 
 	pi.on("tool_call", (event, ctx) => {
-		if (!isManagedSession(ctx)) return;
-
-		if (config.loopGuardEnabled) {
-			const loopSignature = loopGuard.record(event.toolName, event.input);
-			if (loopSignature) {
-				telemetry.recordLoopIntervention();
-				pi.sendUserMessage(
-					`[local-model-harness] The same ${event.toolName} call has now repeated ${config.loopGuardWindow} times in a row. Do not retry it unchanged: re-read the last output, check your assumptions, try a different approach, or report the blocker to the user.`,
-					{ deliverAs: "steer" },
-				);
+		if (isManagedSession(ctx)) {
+			if (config.loopGuardEnabled) {
+				const loopSignature = loopGuard.record(event.toolName, event.input);
+				if (loopSignature) {
+					telemetry.recordLoopIntervention();
+					pi.sendUserMessage(
+						`[local-model-harness] The same ${event.toolName} call has now repeated ${config.loopGuardWindow} times in a row. Do not retry it unchanged: re-read the last output, check your assumptions, try a different approach, or report the blocker to the user.`,
+						{ deliverAs: "steer" },
+					);
+				}
 			}
-		}
 
-		if (config.gateEnabled && taskLedger.needsContractFor(event.toolName, event.input)) {
-			const escalation = contractGate.recordBlock();
-			if (escalation.steer) {
-				pi.sendUserMessage(buildGateSteerMessage(escalation.blocks, config.protocolLanguage), { deliverAs: "steer" });
-			}
-			if (escalation.notify) {
-				ctx.ui.notify(`local-model-harness: ${escalation.blocks} calls blocked without a task contract. The model is refusing to call task_contract; consider intervening.`, "warning");
-			}
-			return {
-				block: true,
-				reason: buildContractBlockReason(config.protocolLanguage),
-			};
-		}
-
-		readGuard.recordRead(event.toolName, event.input);
-		if (config.readGuardEnabled) {
-			const unreadPath = readGuard.needsReadForEdit(event.toolName, event.input);
-			if (unreadPath) {
-				pi.sendUserMessage(
-					`[local-model-harness] You are editing ${unreadPath} without having read it first. Read the file (read tool) so the edit is based on the actual current content, then retry the ${event.toolName}.`,
-					{ deliverAs: "steer" },
-				);
+			if (config.gateEnabled && taskLedger.needsContractFor(event.toolName, event.input)) {
+				const escalation = contractGate.recordBlock();
+				if (escalation.steer) {
+					pi.sendUserMessage(buildGateSteerMessage(escalation.blocks, config.protocolLanguage), { deliverAs: "steer" });
+				}
+				if (escalation.notify) {
+					ctx.ui.notify(`local-model-harness: ${escalation.blocks} calls blocked without a task contract. The model is refusing to call task_contract; consider intervening.`, "warning");
+				}
 				return {
 					block: true,
-					reason: `Read ${unreadPath} before editing it.`,
+					reason: buildContractBlockReason(config.protocolLanguage),
 				};
+			}
+
+			readGuard.recordRead(event.toolName, event.input);
+			if (config.readGuardEnabled) {
+				const unreadPath = readGuard.needsReadForEdit(event.toolName, event.input);
+				if (unreadPath) {
+					pi.sendUserMessage(
+						`[local-model-harness] You are editing ${unreadPath} without having read it first. Read the file (read tool) so the edit is based on the actual current content, then retry the ${event.toolName}.`,
+						{ deliverAs: "steer" },
+					);
+					return {
+						block: true,
+						reason: `Read ${unreadPath} before editing it.`,
+					};
+				}
 			}
 		}
 
@@ -376,8 +376,8 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	});
 
 	pi.on("tool_result", (event, ctx) => {
-		if (!isManagedSession(ctx)) return;
 		taskLedger.recordToolResult(event.toolCallId, event.toolName, event.input, event.isError);
+		if (!isManagedSession(ctx)) return;
 		telemetry.recordToolResult(event.toolName, event.input, event.isError);
 		if ((event.toolName === "edit" || event.toolName === "write") && !event.isError) {
 			unverifiedWarningShown = false;

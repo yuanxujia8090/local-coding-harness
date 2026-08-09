@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import localModelHarness from "../index";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	ContextWatchdog,
 	ContractGate,
@@ -809,5 +811,107 @@ describe("ContextWatchdog", () => {
 		expect(watchdog.observe(69)).toEqual({ action: "resume" });
 		expect(watchdog.isPaused).toBe(false);
 		expect(watchdog.observe(81)).toEqual({ action: "compact" });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Preflight regression: task ledger scope must not depend on managed-model
+// policy. An explicit task_contract defines intent even outside a managed
+// model, so ledger evidence tracking must bind tool_call/tool_result for any
+// active contract. Only harness policy (gate/loop/telemetry/prompt) stays
+// managed-model scoped.
+// ---------------------------------------------------------------------------
+
+type PiStub = {
+	on: (event: string, handler: (...args: unknown[]) => unknown) => void;
+	registerTool: (tool: {
+		name: string;
+		label: string;
+		description?: string;
+		parameters?: unknown;
+		execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[]; details: unknown }>;
+	}) => void;
+	registerCommand: (name: string, command: { description?: string; handler: (...args: unknown[]) => unknown }) => void;
+	appendEntry: (name: string, data: unknown) => void;
+	sendMessage: (message: unknown) => void;
+	sendUserMessage: (text: string, options: unknown) => void;
+};
+
+function createPiStub(): { pi: ExtensionAPI; handlers: Map<string, (arg0: unknown, arg1: unknown) => unknown>; tools: Map<string, (params: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[]; details: unknown } | undefined>> } {
+	const handlers = new Map<string, (arg0: unknown, arg1: unknown) => unknown>();
+	const tools = new Map<string, (params: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[]; details: unknown } | undefined>>();
+	const pi = {
+		on(event: unknown, handler: (arg0: unknown, arg1: unknown) => unknown) {
+			handlers.set(event as string, handler);
+		},
+		registerTool(tool: { name: string; execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[]; details: unknown }> }) {
+			tools.set(tool.name, (params) => tool.execute("test-call", params));
+		},
+		registerCommand() {},
+		appendEntry() {},
+		sendMessage() {},
+		sendUserMessage() {},
+	} as PiStub;
+	return { pi: pi as unknown as ExtensionAPI, handlers, tools };
+}
+
+function nonManagedContext(): ExtensionContext {
+	return {
+		ui: { notify: () => {}, setStatus: () => {}, setWorkingMessage: () => {} },
+		mode: "json",
+		hasUI: false,
+		cwd: process.cwd(),
+		sessionManager: undefined as unknown as ExtensionContext["sessionManager"],
+		modelRegistry: undefined as unknown as ExtensionContext["modelRegistry"],
+		model: { provider: "openai", id: "not-managed-model" } as ExtensionContext["model"],
+		scopedModels: [],
+		isIdle: () => true,
+		isProjectTrusted: () => true,
+		signal: undefined,
+		abort: () => {},
+		hasPendingMessages: () => true,
+		shutdown: () => {},
+		getContextUsage: () => undefined,
+		compact: () => {},
+		getSystemPrompt: () => "",
+	} as unknown as ExtensionContext;
+}
+
+const harnessConfigForLedgerScopeTest = JSON.stringify({
+	provider: "lmstudio",
+	models: ["managed-model"],
+});
+
+describe("preflight: task ledger evidence across model scopes", () => {
+	test("non-managed model with an explicit contract still records verification evidence", async () => {
+		const configPath = await writeTempConfig(harnessConfigForLedgerScopeTest);
+		const previousConfigPath = process.env.LOCAL_MODEL_HARNESS_CONFIG;
+		process.env.LOCAL_MODEL_HARNESS_CONFIG = configPath;
+		try {
+			const { pi, handlers, tools } = createPiStub();
+			localModelHarness(pi);
+
+			await tools.get("task_contract")!({
+				intent: "remove an app",
+				scope: ["app package"],
+				doneWhen: ["app absent"],
+				verificationPlan: ["inspect app"],
+				unresolved: [],
+			});
+
+			const context = nonManagedContext();
+			handlers.get("tool_call")!({ toolName: "edit", toolCallId: "e1", input: { filePath: "src/app.ts" } }, context);
+			handlers.get("tool_result")!({ toolName: "edit", toolCallId: "e1", input: {}, content: [], isError: false }, context);
+			handlers.get("tool_call")!({ toolName: "grep", toolCallId: "g1", input: { path: "src", pattern: "app" } }, context);
+			handlers.get("tool_result")!({ toolName: "grep", toolCallId: "g1", input: {}, content: [], isError: false }, context);
+
+			await expect(tools.get("task_verify")!({ condition: "app absent" })).resolves.toBeDefined();
+		} finally {
+			if (previousConfigPath === undefined) {
+				delete process.env.LOCAL_MODEL_HARNESS_CONFIG;
+			} else {
+				process.env.LOCAL_MODEL_HARNESS_CONFIG = previousConfigPath;
+			}
+		}
 	});
 });

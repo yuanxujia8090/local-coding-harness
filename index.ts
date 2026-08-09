@@ -2,15 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import {
 	buildCodingProtocol,
-	ContextWatchdog,
 	ContractGate,
 	DEFAULT_LOCAL_BASE_URL,
 	FileLeaseLock,
 	SessionTelemetry,
 	TaskCompletionLedger,
-	LoopGuard,
 	ReadGuard,
-	ResearchDriftGuard,
 	TurnCap,
 	assessResponseQuality,
 	defaultConfigPath,
@@ -27,8 +24,12 @@ import {
 import { HarnessController } from "./src/controller";
 import { createCompletionPolicy } from "./src/policies/completion";
 import { createMutationPolicy } from "./src/policies/mutation";
+import { createLoopPolicy } from "./src/policies/loop";
+import { createQualityPolicy } from "./src/policies/quality";
+import { createContextPolicy } from "./src/policies/context";
 import type { Directive } from "./src/policy";
 import type { HarnessEvent } from "./src/events";
+import type { QualityBlock } from "./src/quality";
 
 const PROBE_TOOL = "pi_local_probe";
 const INJECTION_CUSTOM_TYPE = "local-harness-context";
@@ -121,21 +122,16 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	let lockHeld = false;
 	let telemetry = new SessionTelemetry();
 	let taskLedger = new TaskCompletionLedger(new Set(config.gateExtraReadOnlyTools));
-	let loopGuard = new LoopGuard(config.loopGuardWindow, new Set(config.gateExtraReadOnlyTools));
-	let researchDriftGuard = new ResearchDriftGuard(config.researchDriftThreshold, new Set(config.gateExtraReadOnlyTools));
 	let turnCap = new TurnCap(config.turnCapMaxTurns, config.turnCapEnabled);
-	let watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 	let contractGate = new ContractGate();
 	let readGuard = new ReadGuard();
-	let consecutiveSteers = 0;
-	const MAX_CONSECUTIVE_STEERS = 2;
 	let unverifiedWarningShown = false;
 	let lastInjectedBlock: string | undefined;
 
 	function createController(): HarnessController {
 		const completion = createCompletionPolicy({ ledger: taskLedger });
 		const mutation = createMutationPolicy({ ledger: taskLedger, contractGate, readGuard });
-		return new HarnessController(config, [completion, mutation], undefined, () => taskLedger.snapshot());
+		return new HarnessController(config, [completion, mutation, createLoopPolicy(), createQualityPolicy(), createContextPolicy()], undefined, () => taskLedger.snapshot());
 	}
 	let controller = createController();
 
@@ -143,12 +139,16 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		return controller.handle(event);
 	}
 
-	/** 把 controller 的 directives 转成 Pi 的实际干预。block/steer 由 caller
-	 *  决定是否应用；notify 直接提示。返回是否有 block。 */
-	function applyDirectives(directives: readonly Directive[], ctx: ExtensionContext): { blocked: boolean; blockReason?: string } {
+	/** 把 controller 的 directives 转成 Pi 的实际干预，并同步 telemetry 计数。
+	 *  block/steer 由 caller 决定是否应用；notify 直接提示；compact 执行上下文
+	 *  压缩；inject 通过 user message 投递（快速回路受控消息不进对话）。
+	 *  loop 干预的下发次数即 telemetry 的 loopInterventions（与原直调一致）。 */
+	function applyDirectives(directives: readonly Directive[], ctx: ExtensionContext): { blocked: boolean; blockReason?: string; compacted?: boolean; injected?: string } {
 		let blocked = false;
 		let blockReason: string | undefined;
 		let notified = false;
+		let compacted = false;
+		let injected: string | undefined;
 		for (const directive of directives) {
 			switch (directive.kind) {
 				case "block":
@@ -156,6 +156,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 					blockReason = directive.reason;
 					break;
 				case "steer":
+					if (directive.policy === "loop") telemetry.recordLoopIntervention();
 					pi.sendUserMessage(directive.message, { deliverAs: "steer" });
 					break;
 				case "notify":
@@ -164,9 +165,41 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 						notified = true;
 					}
 					break;
+				case "inject":
+					if (!injected) {
+						pi.sendUserMessage(directive.message, { deliverAs: "steer" });
+						injected = directive.message;
+					}
+					break;
+				case "compact":
+					if (!compacted) {
+						compacted = true;
+						telemetry.recordWatchdogCompaction();
+						ctx.ui.setStatus("local-model-watchdog", "Context watchdog: compacting");
+						ctx.compact();
+					}
+					break;
+				case "record":
+					// policy 中间状态已由 controller 回写，无须 adapter 动作。
+					break;
+				case "allow":
+					break;
 			}
 		}
-		return { blocked, blockReason };
+		return { blocked, blockReason, compacted, injected };
+	}
+
+	/** 把一次事件交给 controller，并把 policy 产生的空回复/空工具计数增量
+	 *  同步进 telemetry（controller snapshot 是唯一真相源）。 */
+	function emitAndSync(event: HarnessEvent, ctx: ExtensionContext): { blocked: boolean; blockReason?: string; compacted?: boolean; injected?: string } {
+		const before = controller.snapshot().quality;
+		const directives = emit(event);
+		const after = controller.snapshot().quality;
+		const emptyResponsesDelta = after.emptyResponses - before.emptyResponses;
+		const emptyToolCallsDelta = after.emptyToolCalls - before.emptyToolCalls;
+		for (let i = 0; i < emptyResponsesDelta; i++) telemetry.recordQuality({ ok: false, reason: "empty_response" });
+		for (let i = 0; i < emptyToolCallsDelta; i++) telemetry.recordQuality({ ok: false, reason: "empty_tool_call", tool: "unknown" });
+		return applyDirectives(directives, ctx);
 	}
 
 	function isManagedSession(ctx: ExtensionContext): boolean {
@@ -319,14 +352,10 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	pi.on("session_start", (_event, ctx) => {
 		telemetry = new SessionTelemetry(modelLabel(ctx));
 		taskLedger = new TaskCompletionLedger(new Set(config.gateExtraReadOnlyTools));
-		loopGuard = new LoopGuard(config.loopGuardWindow, new Set(config.gateExtraReadOnlyTools));
-		researchDriftGuard = new ResearchDriftGuard(config.researchDriftThreshold, new Set(config.gateExtraReadOnlyTools));
 		turnCap = new TurnCap(config.turnCapMaxTurns, config.turnCapEnabled);
-		watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 		contractGate = new ContractGate();
 		readGuard = new ReadGuard();
 		controller = createController();
-		consecutiveSteers = 0;
 		unverifiedWarningShown = false;
 		lastInjectedBlock = undefined;
 	});
@@ -370,18 +399,8 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 
 	pi.on("tool_call", (event, ctx) => {
 		if (isManagedSession(ctx)) {
-			if (config.loopGuardEnabled) {
-				const loopSignature = loopGuard.record(event.toolName, event.input);
-				if (loopSignature) {
-					telemetry.recordLoopIntervention();
-					pi.sendUserMessage(
-						`[local-model-harness] The same ${event.toolName} call has now repeated ${config.loopGuardWindow} times in a row. Do not retry it unchanged: re-read the last output, check your assumptions, try a different approach, or report the blocker to the user.`,
-						{ deliverAs: "steer" },
-					);
-				}
-			}
-
-			// 契约门禁与 read guard 路径走 policy 骨架（Task 4 迁移）。
+			// 契约门禁、read guard、死循环检测均走 policy（Task 3/4 迁移）：
+			// 该事件触发 completion/mutation/loop 三个 policy 的判定。
 			const { blocked, blockReason } = applyDirectives(
 				emit({ type: "tool.requested", callId: event.toolCallId, tool: event.toolName, input: event.input }),
 				ctx,
@@ -411,59 +430,25 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 			recordContextUsage(ctx);
 			const message = _event.message as { content?: unknown; stopReason?: unknown } | undefined;
 			const stopReason = typeof message?.stopReason === "string" ? message.stopReason : undefined;
-			// An aborted or errored turn (user cancel / harness abort / transport
-			// error) legitimately has partial or empty content. Assessing it would
-			// fire empty_response and steer a correction the model did not earn.
-			if (stopReason !== "aborted" && stopReason !== "error") {
-				const blocks = message?.content;
-				if (Array.isArray(blocks)) {
-					const verdict = assessResponseQuality(blocks as Parameters<typeof assessResponseQuality>[0]);
-					if (!verdict.ok) {
-						consecutiveSteers++;
-						telemetry.recordQuality(verdict);
-						if (consecutiveSteers <= MAX_CONSECUTIVE_STEERS) {
-							const steerText = verdict.reason === "empty_response"
-								? `[local-model-harness] The last response contained no text and no tool call. Produce a concrete next step: read a file, run a command, or report findings — do not reply with an empty or thinking-only message.`
-								: `[local-model-harness] The ${verdict.tool} tool call had no arguments. Every tool call needs its parameters filled in; re-read the tool description and call it with real input.`;
-							pi.sendUserMessage(steerText, { deliverAs: "steer" });
-						} else {
-							ctx.ui.notify(
-								`local-model-harness: backing off quality corrections after ${consecutiveSteers} in a row — the model is not responding to them.`,
-								"warning",
-							);
-						}
-					} else {
-						consecutiveSteers = 0;
-					}
-				}
-				if (config.researchDriftEnabled && researchDriftGuard.record(blocks as Parameters<typeof assessResponseQuality>[0])) {
-					consecutiveSteers++;
-					telemetry.recordLoopIntervention();
-					if (consecutiveSteers <= MAX_CONSECUTIVE_STEERS) {
-						pi.sendUserMessage(
-							`[local-model-harness] Research appears to be drifting: the last ${config.researchDriftThreshold} turns only performed read-only lookups without reporting any findings. Converge now: summarize what you have learned, state a concrete conclusion, or explicitly name the missing evidence and ask the user to confirm scope. Continuing to gather files without reaching a conclusion wastes time.`,
-							{ deliverAs: "steer" },
-						);
-					} else {
-						ctx.ui.notify(
-							`local-model-harness: research drift persists after ${consecutiveSteers} steer attempts — pausing nudges.`,
-							"warning",
-						);
-					}
-				}
-			}
-			if (config.watchdogEnabled) {
-				const decision = watchdog.observe(ctx.getContextUsage()?.percent);
-				if (decision.action === "compact") {
-					telemetry.recordWatchdogCompaction();
-					ctx.ui.setStatus("local-model-watchdog", "Context watchdog: compacting");
-					ctx.compact();
-				} else if (decision.action === "pause") {
-					ctx.ui.setStatus("local-model-watchdog", "Context watchdog: paused");
-					ctx.ui.notify(decision.reason, "warning");
-				} else if (decision.action === "resume") {
-					ctx.ui.setStatus("local-model-watchdog", undefined);
-				}
+			const content = Array.isArray(message?.content)
+				? (message.content as Parameters<typeof assessResponseQuality>[0])
+				: undefined;
+			// quality / research drift / watchdog 判定全部走 policy（Task 3）：
+			// 一次 turn.end 事件触发这三个政策的评估，Policies 的指令由
+			// applyDirectives 化为 steer/notify/compact 等实际干预。
+			const contextPercent = ctx.getContextUsage()?.percent ?? undefined;
+			const { compacted } = emitAndSync(
+				{ type: "turn.end", content, stopReason, contextPercent },
+				ctx,
+			);
+			// watchdog pause/resume 的 status 语义由 controller 快照回写。
+			const snapshotContext = controller.snapshot().context;
+			if (compacted) {
+				ctx.ui.setStatus("local-model-watchdog", "Context watchdog: compacting");
+			} else if (snapshotContext.paused) {
+				ctx.ui.setStatus("local-model-watchdog", "Context watchdog: paused");
+			} else {
+				ctx.ui.setStatus("local-model-watchdog", undefined);
 			}
 		}
 		await releaseLock(ctx);

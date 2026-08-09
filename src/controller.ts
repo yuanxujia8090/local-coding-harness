@@ -1,7 +1,7 @@
 import type { HarnessConfig } from "./config";
 import { isHarnessEvent, type HarnessEvent } from "./events";
 import { mergeDirectives, type Directive, type Policy } from "./policy";
-import { applyEvent, initialHarnessState, type HarnessState } from "./state";
+import { applyEvent, applyPolicyRecord, initialHarnessState, type HarnessState } from "./state";
 import type { TaskCompletionSnapshot } from "./ledger";
 
 /** 唯一编排入口（架构 4.5）。不调用 Pi API，事件与状态都是纯逻辑，
@@ -40,6 +40,11 @@ export class HarnessController {
 			outputs.push(...policy.evaluate(event, this.state, this.config));
 		}
 		const merged = mergeDirectives(outputs);
+
+		// policy 的 record 指令是跨事件运行时状态的唯一回写入口（state 独占修改权在 controller）。
+		for (const directive of merged) {
+			if (directive.kind === "record") applyPolicyRecord(this.state, directive);
+		}
 
 		// 跨事件冷却期去重：同一 dedupeKey 的 steer/inject 只返回一次，
 		// 防止相同消息反复注入。drop 的项不再计入 interventions。

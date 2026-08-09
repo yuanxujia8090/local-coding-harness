@@ -12,6 +12,8 @@ import {
 	TaskCompletionLedger,
 	LoopGuard,
 	ReadGuard,
+	ResearchDriftGuard,
+	TurnCap,
 	assessResponseQuality,
 	defaultConfigPath,
 	formatDuration,
@@ -116,10 +118,14 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	let lockHeld = false;
 	let telemetry = new SessionTelemetry();
 	let taskLedger = new TaskCompletionLedger(new Set(config.gateExtraReadOnlyTools));
-	let loopGuard = new LoopGuard(config.loopGuardWindow);
+	let loopGuard = new LoopGuard(config.loopGuardWindow, new Set(config.gateExtraReadOnlyTools));
+	let researchDriftGuard = new ResearchDriftGuard(config.researchDriftThreshold, new Set(config.gateExtraReadOnlyTools));
+	let turnCap = new TurnCap(config.turnCapMaxTurns, config.turnCapEnabled);
 	let watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 	let contractGate = new ContractGate();
 	let readGuard = new ReadGuard();
+	let consecutiveSteers = 0;
+	const MAX_CONSECUTIVE_STEERS = 2;
 	let unverifiedWarningShown = false;
 	let taskFollowUpShown = false;
 	let lastInjectedBlock: string | undefined;
@@ -274,10 +280,13 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	pi.on("session_start", (_event, ctx) => {
 		telemetry = new SessionTelemetry(modelLabel(ctx));
 		taskLedger = new TaskCompletionLedger(new Set(config.gateExtraReadOnlyTools));
-		loopGuard = new LoopGuard(config.loopGuardWindow);
+		loopGuard = new LoopGuard(config.loopGuardWindow, new Set(config.gateExtraReadOnlyTools));
+		researchDriftGuard = new ResearchDriftGuard(config.researchDriftThreshold, new Set(config.gateExtraReadOnlyTools));
+		turnCap = new TurnCap(config.turnCapMaxTurns, config.turnCapEnabled);
 		watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 		contractGate = new ContractGate();
 		readGuard = new ReadGuard();
+		consecutiveSteers = 0;
 		unverifiedWarningShown = false;
 		taskFollowUpShown = false;
 		lastInjectedBlock = undefined;
@@ -289,6 +298,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		if (!isManagedSession(ctx)) return;
+		turnCap.reset();
 		if (taskLedger.snapshot().completed) {
 			taskLedger = new TaskCompletionLedger();
 			taskFollowUpShown = false;
@@ -305,6 +315,18 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		const startedAt = performance.now();
 		await acquireLock(ctx);
 		telemetry.recordProviderRequest(performance.now() - startedAt);
+	});
+
+	pi.on("turn_start", (_event, ctx) => {
+		if (!isManagedSession(ctx)) return;
+		if (turnCap.record()) {
+			telemetry.recordLoopIntervention();
+			ctx.ui.notify(
+				`local-model-harness: the model exceeded the turn cap (${config.turnCapMaxTurns}) for this run — stopping the loop.`,
+				"warning",
+			);
+			ctx.abort();
+		}
 	});
 
 	pi.on("tool_call", (event, ctx) => {
@@ -368,20 +390,45 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	pi.on("turn_end", async (_event, ctx) => {
 		if (isManagedSession(ctx)) {
 			recordContextUsage(ctx);
-			const blocks = (_event.message as { content?: unknown })?.content;
-			if (Array.isArray(blocks)) {
-				const verdict = assessResponseQuality(blocks as Parameters<typeof assessResponseQuality>[0]);
-				if (!verdict.ok) {
-					telemetry.recordQuality(verdict);
-					if (verdict.reason === "empty_response") {
+			const message = _event.message as { content?: unknown; stopReason?: unknown } | undefined;
+			const stopReason = typeof message?.stopReason === "string" ? message.stopReason : undefined;
+			// An aborted or errored turn (user cancel / harness abort / transport
+			// error) legitimately has partial or empty content. Assessing it would
+			// fire empty_response and steer a correction the model did not earn.
+			if (stopReason !== "aborted" && stopReason !== "error") {
+				const blocks = message?.content;
+				if (Array.isArray(blocks)) {
+					const verdict = assessResponseQuality(blocks as Parameters<typeof assessResponseQuality>[0]);
+					if (!verdict.ok) {
+						consecutiveSteers++;
+						telemetry.recordQuality(verdict);
+						if (consecutiveSteers <= MAX_CONSECUTIVE_STEERS) {
+							const steerText = verdict.reason === "empty_response"
+								? `[local-model-harness] The last response contained no text and no tool call. Produce a concrete next step: read a file, run a command, or report findings — do not reply with an empty or thinking-only message.`
+								: `[local-model-harness] The ${verdict.tool} tool call had no arguments. Every tool call needs its parameters filled in; re-read the tool description and call it with real input.`;
+							pi.sendUserMessage(steerText, { deliverAs: "steer" });
+						} else {
+							ctx.ui.notify(
+								`local-model-harness: backing off quality corrections after ${consecutiveSteers} in a row — the model is not responding to them.`,
+								"warning",
+							);
+						}
+					} else {
+						consecutiveSteers = 0;
+					}
+				}
+				if (config.researchDriftEnabled && researchDriftGuard.record(blocks as Parameters<typeof assessResponseQuality>[0])) {
+					consecutiveSteers++;
+					telemetry.recordLoopIntervention();
+					if (consecutiveSteers <= MAX_CONSECUTIVE_STEERS) {
 						pi.sendUserMessage(
-							`[local-model-harness] The last response contained no text and no tool call. Produce a concrete next step: read a file, run a command, or report findings — do not reply with an empty or thinking-only message.`,
+							`[local-model-harness] Research appears to be drifting: the last ${config.researchDriftThreshold} turns only performed read-only lookups without reporting any findings. Converge now: summarize what you have learned, state a concrete conclusion, or explicitly name the missing evidence and ask the user to confirm scope. Continuing to gather files without reaching a conclusion wastes time.`,
 							{ deliverAs: "steer" },
 						);
 					} else {
-						pi.sendUserMessage(
-							`[local-model-harness] The ${verdict.tool} tool call had no arguments. Every tool call needs its parameters filled in; re-read the tool description and call it with real input.`,
-							{ deliverAs: "steer" },
+						ctx.ui.notify(
+							`local-model-harness: research drift persists after ${consecutiveSteers} steer attempts — pausing nudges.`,
+							"warning",
 						);
 					}
 				}

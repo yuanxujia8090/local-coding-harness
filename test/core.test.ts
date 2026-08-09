@@ -9,8 +9,10 @@ import {
 	LoopGuard,
 	QualityMonitor,
 	ReadGuard,
+	ResearchDriftGuard,
 	SessionTelemetry,
 	TaskCompletionLedger,
+	TurnCap,
 	assessResponseQuality,
 	buildCodingProtocol,
 	buildContractBlockReason,
@@ -49,6 +51,10 @@ function testConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfig {
 		watchdogThresholdPercent: 80,
 		loopGuardEnabled: true,
 		loopGuardWindow: 3,
+		researchDriftEnabled: true,
+		researchDriftThreshold: 8,
+		turnCapEnabled: false,
+		turnCapMaxTurns: 40,
 		protocolLanguage: "en",
 		gateEnabled: true,
 		gateExtraReadOnlyTools: [],
@@ -71,6 +77,10 @@ describe("loadHarnessConfig", () => {
 		expect(result.config.watchdogThresholdPercent).toBe(80);
 		expect(result.config.loopGuardEnabled).toBe(true);
 		expect(result.config.loopGuardWindow).toBe(3);
+		expect(result.config.researchDriftEnabled).toBe(true);
+		expect(result.config.researchDriftThreshold).toBe(8);
+		expect(result.config.turnCapEnabled).toBe(false);
+		expect(result.config.turnCapMaxTurns).toBe(40);
 		expect(result.config.lockPath).toContain("local-model-harness.lock");
 	});
 
@@ -108,6 +118,8 @@ describe("loadHarnessConfig", () => {
 			models: ["model-a", "model-a", " model-b "],
 			contextWatchdog: { enabled: false, thresholdPercent: 70 },
 			loopGuard: { enabled: false, window: 4 },
+			researchDrift: { enabled: false, threshold: 6 },
+			turnCap: { enabled: true, maxTurns: 20 },
 			protocolLanguage: "zh",
 		}));
 
@@ -121,6 +133,10 @@ describe("loadHarnessConfig", () => {
 		expect(result.config.watchdogThresholdPercent).toBe(70);
 		expect(result.config.loopGuardEnabled).toBe(false);
 		expect(result.config.loopGuardWindow).toBe(4);
+		expect(result.config.researchDriftEnabled).toBe(false);
+		expect(result.config.researchDriftThreshold).toBe(6);
+		expect(result.config.turnCapEnabled).toBe(true);
+		expect(result.config.turnCapMaxTurns).toBe(20);
 		expect(result.config.protocolLanguage).toBe("zh");
 	});
 
@@ -523,10 +539,112 @@ describe("LoopGuard", () => {
 		expect(guard.record("bash", { command: "ls" })).toBe("bash:ls");
 	});
 
+	test("a new state-changing call resets the repeat window", () => {
+		const guard = new LoopGuard(3);
+
+		guard.record("read", { path: "a.ts" });
+		guard.record("read", { path: "a.ts" });
+		guard.record("edit", { path: "a.ts" });
+		expect(guard.record("read", { path: "a.ts" })).toBeNull();
+		expect(guard.record("read", { path: "a.ts" })).toBeNull();
+		expect(guard.record("read", { path: "a.ts" })).toBe("read:a.ts");
+	});
+
+	test("repeating the same state-changing call still counts as a loop", () => {
+		const guard = new LoopGuard(3);
+
+		guard.record("bash", { command: "npm test" });
+		guard.record("bash", { command: "npm test" });
+		expect(guard.record("bash", { command: "npm test" })).toBe("bash:npm test");
+	});
+
 	test("signatures distinguish tools and inputs", () => {
 		expect(toolCallSignature("bash", { command: "npm test" })).toBe("bash:npm test");
 		expect(toolCallSignature("edit", { path: "src/a.ts" })).toBe("edit:src/a.ts");
 		expect(toolCallSignature("task_verify", { condition: "done" })).toBe('task_verify:{"condition":"done"}');
+	});
+});
+
+describe("TurnCap", () => {
+	test("flags once the turn count exceeds the cap", () => {
+		const cap = new TurnCap(3, true);
+
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(true);
+	});
+
+	test("does nothing when disabled", () => {
+		const cap = new TurnCap(3, false);
+
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(false);
+	});
+
+	test("resets the counter", () => {
+		const cap = new TurnCap(2, true);
+
+		cap.record();
+		cap.record();
+		expect(cap.record()).toBe(true);
+		cap.reset();
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(false);
+		expect(cap.record()).toBe(true);
+	});
+});
+
+describe("ResearchDriftGuard", () => {
+	test("flags a run of read-only turns without findings", () => {
+		const guard = new ResearchDriftGuard(3);
+
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "grep", arguments: { path: "b.ts" } }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "find", arguments: { path: "c.ts" } }])).toBe(true);
+	});
+
+	test("resets on a textual finding", () => {
+		const guard = new ResearchDriftGuard(3);
+
+		guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }]);
+		guard.record([{ type: "toolCall", name: "read", arguments: { path: "b.ts" } }]);
+		expect(guard.record([{ type: "text", text: "I found the root cause." }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "d.ts" } }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "e.ts" } }])).toBe(true);
+	});
+
+	test("resets on a completion signal or state change", () => {
+		const guard = new ResearchDriftGuard(2);
+
+		guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }]);
+		expect(guard.record([{ type: "toolCall", name: "task_complete", arguments: {} }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "edit", arguments: { path: "b.ts" } }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(false);
+	});
+
+	test("does not count cancelled or mixed turns", () => {
+		const guard = new ResearchDriftGuard(3);
+
+		guard.record([]);
+		guard.record([{ type: "thinking", thinking: "planning..." }]);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "b.ts" } }])).toBe(false);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(true);
+	});
+
+	test("notifies once until it resets", () => {
+		const guard = new ResearchDriftGuard(2);
+
+		guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }]);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "b.ts" } }])).toBe(true);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(false);
+		guard.record([{ type: "text", text: "Conclusion reached." }]);
+		guard.record([{ type: "toolCall", name: "read", arguments: { path: "d.ts" } }]);
+		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "e.ts" } }])).toBe(true);
 	});
 });
 
@@ -554,6 +672,12 @@ describe("QualityMonitor", () => {
 		expect(assessResponseQuality([
 			{ type: "toolCall", name: "bash", arguments: {} },
 		])).toEqual({ ok: false, reason: "empty_tool_call", tool: "bash" });
+	});
+
+	test("allows zero-argument tools (e.g. task_complete) with empty arguments", () => {
+		expect(assessResponseQuality([
+			{ type: "toolCall", name: "task_complete", arguments: {} },
+		])).toEqual({ ok: true });
 	});
 
 	test("monitor counts anomalies across turns", () => {

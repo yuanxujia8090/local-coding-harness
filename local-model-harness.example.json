@@ -9,6 +9,14 @@
 		"enabled": true,
 		"window": 3
 	},
+	"researchDrift": {
+		"enabled": true,
+		"threshold": 8
+	},
+	"turnCap": {
+		"enabled": true,
+		"maxTurns": 40
+	},
 	"gate": {
 		"enabled": true,
 		"readOnlyTools": ["shepherd_rules"]

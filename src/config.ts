@@ -7,6 +7,8 @@ export const DEFAULT_LOCK_FILENAME = "local-model-harness.lock";
 export const DEFAULT_WATCHDOG_THRESHOLD_PERCENT = 80;
 export const WATCHDOG_RESUME_MARGIN_PERCENT = 10;
 export const DEFAULT_LOOP_WINDOW = 3;
+export const DEFAULT_DRIFT_THRESHOLD = 8;
+export const DEFAULT_TURN_CAP = 40;
 export const DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1";
 
 export type ProtocolLanguage = "en" | "zh";
@@ -19,6 +21,10 @@ export type HarnessConfig = {
 	watchdogThresholdPercent: number;
 	loopGuardEnabled: boolean;
 	loopGuardWindow: number;
+	researchDriftEnabled: boolean;
+	researchDriftThreshold: number;
+	turnCapEnabled: boolean;
+	turnCapMaxTurns: number;
 	protocolLanguage: ProtocolLanguage;
 	gateEnabled: boolean;
 	gateExtraReadOnlyTools: string[];
@@ -93,6 +99,18 @@ export function loadHarnessConfig(path: string = defaultConfigPath()): ConfigLoa
 		? loopGuard.window
 		: DEFAULT_LOOP_WINDOW;
 
+	const researchDrift = readSection(root.researchDrift);
+	const researchDriftEnabled = typeof researchDrift.enabled === "boolean" ? researchDrift.enabled : true;
+	const researchDriftThreshold = typeof researchDrift.threshold === "number" && Number.isInteger(researchDrift.threshold) && researchDrift.threshold >= 3
+		? researchDrift.threshold
+		: DEFAULT_DRIFT_THRESHOLD;
+
+	const turnCap = readSection(root.turnCap);
+	const turnCapEnabled = typeof turnCap.enabled === "boolean" ? turnCap.enabled : false;
+	const turnCapMaxTurns = typeof turnCap.maxTurns === "number" && Number.isInteger(turnCap.maxTurns) && turnCap.maxTurns >= 4
+		? turnCap.maxTurns
+		: DEFAULT_TURN_CAP;
+
 	const protocolLanguage: ProtocolLanguage = root.protocolLanguage === "zh" ? "zh" : "en";
 
 	const gate = readSection(root.gate);
@@ -115,6 +133,10 @@ export function loadHarnessConfig(path: string = defaultConfigPath()): ConfigLoa
 			watchdogThresholdPercent,
 			loopGuardEnabled,
 			loopGuardWindow,
+			researchDriftEnabled,
+			researchDriftThreshold,
+			turnCapEnabled,
+			turnCapMaxTurns,
 			protocolLanguage,
 			gateEnabled,
 			gateExtraReadOnlyTools,

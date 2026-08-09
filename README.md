@@ -74,6 +74,14 @@ Create `~/.pi/agent/local-model-harness.json` listing the models the harness sho
     "enabled": true,                   // default true
     "window": 3                        // default 3 (min 2)
   },
+  "researchDrift": {                   // optional; steers over-long read-only research
+    "enabled": true,                   // default true
+    "threshold": 8                     // default 8 (min 3) consecutive read-only turns with no findings
+  },
+  "turnCap": {                         // optional; hard cap on turns per run — off by default
+    "enabled": false,                  // default false; enable to hard-stop non-terminating runs
+    "maxTurns": 40                     // default 40 (min 4); aborts once turns exceed this
+  },
   "protocolLanguage": "en",            // optional: "en" (default) or "zh"
   "gate": {                            // optional
     "enabled": true,                   // default true; false disables the contract gate entirely
@@ -130,7 +138,11 @@ Read-only exploration (`read`, `grep`, `find`, `ls`, and known read-only bash li
 
 - **KV-cache-friendly injection.** Protocol, verification state, and task state are injected as a trailing custom message (not a system-prompt rewrite), so the cached prefix on your local server stays valid. The block is deduplicated and re-injected after compaction.
 - **Watchdog pause.** If compaction doesn't bring usage below the threshold, the watchdog pauses instead of firing doomed compactions, and resumes once usage drops clearly. pi's own near-overflow compaction still applies as a backstop.
-- **Loop guard steers, never blocks.** Repetition can be legitimate (polling); the guard injects a corrective nudge once per repeated signature and records the intervention in telemetry.
+- **Loop guard steers, never blocks.** Repetition can be legitimate (polling); the guard injects a corrective nudge once per repeated signature and records the intervention in telemetry. A new state-changing call resets the repeat window (repeating a call after the environment changed is progress), while repeating an identical mutation still counts as a loop.
+- **Research drift guard.** Beyond identical repeats, the harness also detects *research drift*: N consecutive turns of read-only lookups (no textual findings, no `task_verify`/`task_complete`, no state change) steer the model to converge — summarize findings, or explicitly ask the user to confirm scope instead of gathering more files. Cancelled turns (empty content) never count. Configure via `researchDrift`.
+- **Turn cap is the backstop.** Research drift, identical repeats, and over-long runs all share one final safety net: an optional hard turn cap (`turnCap`) that aborts the run once turns exceed `maxTurns`, ported from little-coder's `max_turns` early-break. Off by default; enable it when a model tends to run long.
+- **Steer backoff.** Quality corrections and drift nudges stop after 2 consecutive unanswered ones and degrade to a single UI warning, so a stuck model can't farm a nudging loop.
+- **Cancelled turns are not quality failures.** A turn that ends `stopReason: "aborted"` (user ESC or a harness abort) or `"error"` (transport/provider failure) is skipped by the quality check — its empty content is expected, not a model defect.
 - **Conservative bash classification.** A command is treated as state-changing only when it writes structurally — redirects (`>`, `>>`), known destructive commands (`rm`, `mv`, `git commit`, package installs), or arbitrary script execution. Everything else is read-only by default, so exploration chains, loops, and inline scripts are never gated without reason.
 - **Evidence-first mechanisms.** Every mechanism was validated against benchmark transcripts before shipping. Verification pacing (v0.2.1) fixed a real deadlock (t2 errors 27→0); quality monitor and read guard defend against rare/rare-but-real failure modes and are off or minimal by default.
 

@@ -16,7 +16,7 @@ export function createLoopPolicy(): Policy {
 				if (!config.loopGuardEnabled) return [];
 				const windowSize = config.loopGuardWindow;
 				const signature = toolCallSignature(event.tool, event.input as Record<string, unknown>);
-				const stateChanged = isStateChangingTool(event.tool, event.input as Record<string, unknown>, new Set(config.gateExtraReadOnlyTools)) === false;
+				const stateChanged = isStateChangingTool(event.tool, event.input as Record<string, unknown>, new Set(config.gateExtraReadOnlyTools));
 
 				let recent = [...state.loop.recentSignatures];
 				if (stateChanged && recent.length > 0 && recent[recent.length - 1] !== signature) {

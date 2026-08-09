@@ -63,6 +63,16 @@ describe("LoopPolicy", () => {
 		expect(steer.kind === "steer" && steer.message).toContain("3 times in a row");
 	});
 
+	test("只读工具同签名重复也达到窗口 -> steer", () => {
+		const controller = makeController(testConfig({ loopGuardWindow: 3 }), [createLoopPolicy()]);
+		const path = "/pi/context-mode/SKILL.md";
+		for (let i = 0; i < 3; i++) {
+			const directives = controller.handle({ type: "tool.requested", callId: `r${i}`, tool: "read", input: { path } });
+			if (i === 2) expect(steers(directives)).toHaveLength(1);
+			else expect(steers(directives)).toHaveLength(0);
+		}
+	});
+
 	test("签名变化重置计数", () => {
 		const controller = makeController(testConfig({ loopGuardWindow: 3 }), [createLoopPolicy()]);
 		controller.handle({ type: "tool.requested", callId: "c1", tool: "bash", input: { command: "ls -la" } });

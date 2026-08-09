@@ -2,6 +2,7 @@ import type { HarnessConfig } from "./config";
 import { isHarnessEvent, type HarnessEvent } from "./events";
 import { mergeDirectives, type Directive, type Policy } from "./policy";
 import { applyEvent, initialHarnessState, type HarnessState } from "./state";
+import type { TaskCompletionSnapshot } from "./ledger";
 
 /** 唯一编排入口（架构 4.5）。不调用 Pi API，事件与状态都是纯逻辑，
  *  便于单元测试直接输入事件轨迹。 */
@@ -14,6 +15,7 @@ export class HarnessController {
 		private readonly config: HarnessConfig,
 		private readonly policies: readonly Policy[],
 		initial: HarnessState = initialHarnessState(),
+		private readonly taskSnapshot?: () => TaskCompletionSnapshot,
 	) {
 		this.state = initial;
 	}
@@ -21,6 +23,10 @@ export class HarnessController {
 	handle(event: HarnessEvent): readonly Directive[] {
 		if (!isHarnessEvent(event)) {
 			throw new Error(`Unknown harness event: ${JSON.stringify(event)}`);
+		}
+		// ledger 是任务契约与证据真相源（arch 4.2）：handle 前把最新快照同步进 state。
+		if (this.taskSnapshot) {
+			this.state.task = this.taskSnapshot();
 		}
 		applyEvent(this.state, event);
 

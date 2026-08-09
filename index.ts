@@ -2,8 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import {
 	buildCodingProtocol,
-	buildContractBlockReason,
-	buildGateSteerMessage,
 	ContextWatchdog,
 	ContractGate,
 	DEFAULT_LOCAL_BASE_URL,
@@ -26,6 +24,11 @@ import {
 	type ConfigLoadResult,
 	type HarnessConfig,
 } from "./src/core.ts";
+import { HarnessController } from "./src/controller";
+import { createCompletionPolicy } from "./src/policies/completion";
+import { createMutationPolicy } from "./src/policies/mutation";
+import type { Directive } from "./src/policy";
+import type { HarnessEvent } from "./src/events";
 
 const PROBE_TOOL = "pi_local_probe";
 const INJECTION_CUSTOM_TYPE = "local-harness-context";
@@ -127,8 +130,44 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	let consecutiveSteers = 0;
 	const MAX_CONSECUTIVE_STEERS = 2;
 	let unverifiedWarningShown = false;
-	let taskFollowUpShown = false;
 	let lastInjectedBlock: string | undefined;
+
+	function createController(): HarnessController {
+		const completion = createCompletionPolicy({ ledger: taskLedger });
+		const mutation = createMutationPolicy({ ledger: taskLedger, contractGate, readGuard });
+		return new HarnessController(config, [completion, mutation], undefined, () => taskLedger.snapshot());
+	}
+	let controller = createController();
+
+	function emit(event: HarnessEvent): readonly Directive[] {
+		return controller.handle(event);
+	}
+
+	/** 把 controller 的 directives 转成 Pi 的实际干预。block/steer 由 caller
+	 *  决定是否应用；notify 直接提示。返回是否有 block。 */
+	function applyDirectives(directives: readonly Directive[], ctx: ExtensionContext): { blocked: boolean; blockReason?: string } {
+		let blocked = false;
+		let blockReason: string | undefined;
+		let notified = false;
+		for (const directive of directives) {
+			switch (directive.kind) {
+				case "block":
+					blocked = true;
+					blockReason = directive.reason;
+					break;
+				case "steer":
+					pi.sendUserMessage(directive.message, { deliverAs: "steer" });
+					break;
+				case "notify":
+					if (!notified) {
+						ctx.ui.notify(directive.message, directive.level);
+						notified = true;
+					}
+					break;
+			}
+		}
+		return { blocked, blockReason };
+	}
 
 	function isManagedSession(ctx: ExtensionContext): boolean {
 		return isManagedLocalModel(ctx.model as { provider?: unknown; id?: unknown } | undefined, config);
@@ -286,9 +325,9 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		watchdog = new ContextWatchdog(config.watchdogThresholdPercent);
 		contractGate = new ContractGate();
 		readGuard = new ReadGuard();
+		controller = createController();
 		consecutiveSteers = 0;
 		unverifiedWarningShown = false;
-		taskFollowUpShown = false;
 		lastInjectedBlock = undefined;
 	});
 
@@ -301,7 +340,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		turnCap.reset();
 		if (taskLedger.snapshot().completed) {
 			taskLedger = new TaskCompletionLedger();
-			taskFollowUpShown = false;
+			controller = createController();
 		}
 		telemetry.setModel(modelLabel(ctx));
 		const block = buildInjectionBlock();
@@ -342,33 +381,13 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 				}
 			}
 
-			if (config.gateEnabled && taskLedger.needsContractFor(event.toolName, event.input)) {
-				const escalation = contractGate.recordBlock();
-				if (escalation.steer) {
-					pi.sendUserMessage(buildGateSteerMessage(escalation.blocks, config.protocolLanguage), { deliverAs: "steer" });
-				}
-				if (escalation.notify) {
-					ctx.ui.notify(`local-model-harness: ${escalation.blocks} calls blocked without a task contract. The model is refusing to call task_contract; consider intervening.`, "warning");
-				}
-				return {
-					block: true,
-					reason: buildContractBlockReason(config.protocolLanguage),
-				};
-			}
-
-			readGuard.recordRead(event.toolName, event.input);
-			if (config.readGuardEnabled) {
-				const unreadPath = readGuard.needsReadForEdit(event.toolName, event.input);
-				if (unreadPath) {
-					pi.sendUserMessage(
-						`[local-model-harness] You are editing ${unreadPath} without having read it first. Read the file (read tool) so the edit is based on the actual current content, then retry the ${event.toolName}.`,
-						{ deliverAs: "steer" },
-					);
-					return {
-						block: true,
-						reason: `Read ${unreadPath} before editing it.`,
-					};
-				}
+			// 契约门禁与 read guard 路径走 policy 骨架（Task 4 迁移）。
+			const { blocked, blockReason } = applyDirectives(
+				emit({ type: "tool.requested", callId: event.toolCallId, tool: event.toolName, input: event.input }),
+				ctx,
+			);
+			if (blocked) {
+				return { block: true, reason: blockReason ?? "Blocked by local-model-harness." };
 			}
 		}
 
@@ -460,14 +479,8 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 			recordContextUsage(ctx);
 			const snapshot = persistTelemetry();
 			const task = taskLedger.snapshot();
-			if (task.mutationToolCalls.length > 0 && !task.completed && !taskFollowUpShown) {
-				persistTask();
-				pi.sendUserMessage(
-					`Task remains incomplete. Missing completion evidence: ${task.missingConditions.join(", ") || "call task_complete with evidence"}. Continue the current task; do not report completion yet.`,
-					{ deliverAs: "followUp" },
-				);
-				taskFollowUpShown = true;
-			}
+			// 任务未完成续跑 steer 走 completionPolicy（dedupeKey 防止重复 followUp）。
+			applyDirectives(emit({ type: "agent.settled" }), ctx);
 			if (snapshot.verificationPending && !unverifiedWarningShown) {
 				pi.sendMessage({
 					customType: "local-verification",
@@ -498,7 +511,6 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		async execute(_toolCallId, params) {
 			const result = taskLedger.setContract(params);
 			if (!result.ok) throw new Error(`Task contract rejected: ${result.reason}`);
-			taskFollowUpShown = false;
 			contractGate.reset();
 			persistTask();
 			return { content: [{ type: "text", text: `Task contract active: ${params.intent}` }], details: undefined };

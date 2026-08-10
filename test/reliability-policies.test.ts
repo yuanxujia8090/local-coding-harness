@@ -193,8 +193,12 @@ describe("QualityPolicy", () => {
 });
 
 describe("ContextPolicy", () => {
+	// adapter 传入的共享投影：compact 注入内容 = 同一来源的完整 projection
+	// （protocol + verification + task state），policy 只负责何时注入。
+	const projection = () => "Coding Protocol\n\n## Task State\n…";
+
 	test("上下文达到阈值 -> compact；未超阈值不 compact", () => {
-		const controller = makeController(testConfig({ watchdogThresholdPercent: 80 }), [createContextPolicy()]);
+		const controller = makeController(testConfig({ watchdogThresholdPercent: 80 }), [createContextPolicy(projection)]);
 		const low = controller.handle(turnEnd([], { contextPercent: 55 }));
 		expect(low.some((directive) => directive.kind === "compact")).toBe(false);
 		const high = controller.handle(turnEnd([], { contextPercent: 82 }));
@@ -202,7 +206,7 @@ describe("ContextPolicy", () => {
 	});
 
 	test("margin 内不重复 compact", () => {
-		const controller = makeController(testConfig({ watchdogThresholdPercent: 80 }), [createContextPolicy()]);
+		const controller = makeController(testConfig({ watchdogThresholdPercent: 80 }), [createContextPolicy(projection)]);
 		controller.handle(turnEnd([], { contextPercent: 82 }));
 		// 收缩到 margin 内（70% 到 80-10）不重复
 		const second = controller.handle(turnEnd([], { contextPercent: 72 }));
@@ -214,9 +218,12 @@ describe("ContextPolicy", () => {
 		expect(fourth.some((directive) => directive.kind === "compact")).toBe(true);
 	});
 
-	test("compaction 后注入 protocol 和未完成任务状态", () => {
-		const controller = makeController(testConfig(), [createContextPolicy()]);
+	test("compaction 后注入完整投影（content = projection 结果）", () => {
+		const controller = makeController(testConfig(), [createContextPolicy(projection)]);
 		controller.handle(turnEnd([], { contextPercent: 84 }));
-		expect(controller.handle({ type: "context.compacted" }).some((directive) => directive.kind === "inject")).toBe(true);
+		const directives = controller.handle({ type: "context.compacted" });
+		const inject = directives.find((directive) => directive.kind === "inject");
+		expect(inject).toBeDefined();
+		expect(inject?.kind === "inject" && inject.message).toBe("Coding Protocol\n\n## Task State\n…");
 	});
 });

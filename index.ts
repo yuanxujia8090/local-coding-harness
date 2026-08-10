@@ -131,7 +131,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	function createController(): HarnessController {
 		const completion = createCompletionPolicy({ ledger: taskLedger });
 		const mutation = createMutationPolicy({ ledger: taskLedger, contractGate, readGuard });
-		return new HarnessController(config, [completion, mutation, createLoopPolicy(), createQualityPolicy(), createContextPolicy()], undefined, () => taskLedger.snapshot());
+		return new HarnessController(config, [completion, mutation, createLoopPolicy(), createQualityPolicy(), createContextPolicy(buildInjectionBlock)], undefined, () => taskLedger.snapshot());
 	}
 	let controller = createController();
 
@@ -269,6 +269,10 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		});
 	}
 
+	/** 完整注入投影：protocol + verification state + task state。
+	 *  它是 legacy before_agent_start 与 ContextPolicy post-compact 注入的
+	 *  **同一来源**（审查第四轮：共享完整 verification projection），因此两
+	 *  条路径内容逐字节一致，可被 lastInjectedBlock 单一 cache 去重。 */
 	function buildInjectionBlock(): string {
 		const sections: string[] = [buildCodingProtocol(config.protocolLanguage)];
 		if (telemetry.snapshot().verificationPending) {
@@ -387,6 +391,9 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 
 	pi.on("turn_start", (_event, ctx) => {
 		if (!isManagedSession(ctx)) return;
+		// turn.started 先入 controller：session.turns 是 quality 等跨回合
+		// 去重的窗口依据（审查 F0/P0），随后再处理 turn cap。
+		applyDirectives(emit({ type: "turn.started" }), ctx);
 		if (turnCap.record()) {
 			telemetry.recordLoopIntervention();
 			ctx.ui.notify(
@@ -455,8 +462,21 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	});
 
 	pi.on("session_compact", (_event, ctx) => {
-		if (isManagedSession(ctx)) telemetry.recordCompaction();
-		lastInjectedBlock = undefined;
+		if (!isManagedSession(ctx)) return;
+		// watchdog 或手动压缩后统一走 ContextPolicy：注入协议与任务状态，
+		// 并在 controller 内推进 context 状态（审查 F1/P1）。pendingCompact 由
+		// 下一个 turn.end 的 evolveWatchdog 消费，这里不清除，避免破坏
+		// 「压缩后仍高 -> pause」的判定。
+		const { injected } = applyDirectives(emit({ type: "context.compacted" }), ctx);
+		telemetry.recordCompaction();
+		// 把 compact 实际投递的 payload 写回 lastInjectedBlock：cache 的语义是
+		// 「模型上下文里最近一次注入的完整内容」，谁最后投递就归谁。下一
+		// 次 before_agent_start 只在内容真正变化时重投（审查第三轮 P1）。若
+		// 不更新，契约建立后 compact 注入的 protocol + Task State 会被旧的
+		// protocol-only 缓存误判为「不同」而重复投递。
+		if (injected !== undefined) {
+			lastInjectedBlock = injected;
+		}
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {

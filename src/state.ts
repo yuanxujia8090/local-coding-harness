@@ -1,6 +1,5 @@
 import type { ModelReference } from "./config";
 import type { TaskCompletionSnapshot } from "./ledger";
-import type { TelemetrySnapshot } from "./session";
 import type { HarnessEvent } from "./events";
 import type { Directive } from "./policy";
 
@@ -52,7 +51,6 @@ export interface HarnessState {
 	quality: QualityState;
 	loop: LoopState;
 	interventions: InterventionState;
-	telemetry: TelemetrySnapshot;
 }
 
 export function initialHarnessState(model: ModelReference | null = null): HarnessState {
@@ -70,30 +68,6 @@ export function initialHarnessState(model: ModelReference | null = null): Harnes
 		quality: { emptyResponses: 0, emptyToolCalls: 0, consecutiveSteers: 0 },
 		loop: { recentSignatures: [], notifiedSignatures: [], driftTurns: 0, driftNotified: false },
 		interventions: { blocks: 0, steers: 0, injects: 0, compactions: 0 },
-		telemetry: zeroTelemetry(),
-	};
-}
-
-function zeroTelemetry(): TelemetrySnapshot {
-	return {
-		model: "unknown model",
-		durationMs: 0,
-		providerRequests: 0,
-		lockWaitMs: 0,
-		lockWaits: 0,
-		lockWaitMaxMs: 0,
-		toolCalls: 0,
-		toolErrors: 0,
-		toolErrorsByTool: {},
-		changedFiles: [],
-		verificationPending: false,
-		verificationCommands: [],
-		contextPeakPercent: null,
-		compactions: 0,
-		loopInterventions: 0,
-		watchdogCompactions: 0,
-		emptyResponses: 0,
-		emptyToolCalls: 0,
 	};
 }
 
@@ -118,7 +92,8 @@ export function applyEvent(state: HarnessState, event: HarnessEvent): void {
 		case "context.observed":
 			return;
 		case "context.compacted":
-			state.context.pendingCompact = false;
+			// 压缩完成不清 pendingCompact：它由下一个 turn.end 的 evolveWatchdog
+			// 消费（仍高 -> pause，回落后复位），提前清除会破坏该判定（审查 F1）。
 			return;
 		case "session.ending":
 			state.session.active = false;

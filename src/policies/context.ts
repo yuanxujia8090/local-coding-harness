@@ -3,15 +3,17 @@ import type { HarnessEvent } from "../events";
 import type { Directive, Policy } from "../policy";
 import type { HarnessState } from "../state";
 import { evolveWatchdog, type WatchdogState } from "../watchdog";
-import { buildCodingProtocol } from "../protocol";
-import { formatTaskCompletionReport } from "../ledger";
 
 /** 上下文压力政策（原 watchdog.ts + index turn_end 路径）。
  *  - turn.end 带 contextPercent：达阈值 -> compact；compaction 后仍高 -> pause。
- *  - context.compacted：注入 protocol 与未完成任务状态（compaction 会让模型
- *    丢动态上下文，必须重建）。
- *  状态经 record 回写 code 的 paused/pendingCompact。 */
-export function createContextPolicy(): Policy {
+ *  - context.compacted：注入完整上下文投影（protocol + verification +
+ *    task state）。注入内容不由 policy 拼装，而是来自 adapter 传入的共享
+ *    投影函数——它与 legacy before_agent_start 的注入是同一个函数（同一个
+ *    verification projection），保证两条路径内容一致、可被同一 dedupe 缓存
+ *    覆盖（审查第三轮 P1 / 第四轮：共享完整 verification projection）。
+ *    之所以传回调：verification pending 存在 adapter 的 telemetry sidecar，
+ *    Policy 不持有该数据，只能由 wiring 层投影。 */
+export function createContextPolicy(projection: () => string): Policy {
 	return {
 		id: "context",
 		evaluate(event: HarnessEvent, state: Readonly<HarnessState>, config: HarnessConfig): readonly Directive[] {
@@ -36,15 +38,14 @@ export function createContextPolicy(): Policy {
 			}
 
 			if (event.type === "context.compacted") {
-				const sections = [buildCodingProtocol(config.protocolLanguage)];
-				if (state.task.intent && !state.task.completed) {
-					sections.push(`## Task State\n${formatTaskCompletionReport(state.task)}\n- Finish the pending completion evidence before reporting done.`);
-				}
 				return [{
 					kind: "inject",
 					policy: "context",
-					message: sections.join("\n\n"),
-					dedupeKey: `post-compact-${state.interventions.compactions}`,
+					message: projection(),
+					// 每次压缩后各注入一次：用回合号作窗口 key（compactions 只在
+					// watchdog 的 compact 指令下递增，手动 /compact 不会），
+					// 保证手动压缩与 watchdog 压缩都各得一次注入（审查 F1）。
+					dedupeKey: `post-compact-${state.session.turns}`,
 				}];
 			}
 

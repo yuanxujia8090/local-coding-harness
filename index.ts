@@ -131,7 +131,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 	function createController(): HarnessController {
 		const completion = createCompletionPolicy({ ledger: taskLedger });
 		const mutation = createMutationPolicy({ ledger: taskLedger, contractGate, readGuard });
-		return new HarnessController(config, [completion, mutation, createLoopPolicy(), createQualityPolicy(), createContextPolicy(buildInjectionBlock)], undefined, () => taskLedger.snapshot());
+		return new HarnessController(config, [completion, mutation, createLoopPolicy(), createQualityPolicy(), createContextPolicy()], undefined, () => taskLedger.snapshot());
 	}
 	let controller = createController();
 
@@ -467,7 +467,7 @@ function registerActiveHarness(pi: ExtensionAPI, config: HarnessConfig): void {
 		// 并在 controller 内推进 context 状态（审查 F1/P1）。pendingCompact 由
 		// 下一个 turn.end 的 evolveWatchdog 消费，这里不清除，避免破坏
 		// 「压缩后仍高 -> pause」的判定。
-		const { injected } = applyDirectives(emit({ type: "context.compacted" }), ctx);
+		const { injected } = applyDirectives(emit({ type: "context.compacted", projection: buildInjectionBlock() }), ctx);
 		telemetry.recordCompaction();
 		// 把 compact 实际投递的 payload 写回 lastInjectedBlock：cache 的语义是
 		// 「模型上下文里最近一次注入的完整内容」，谁最后投递就归谁。下一

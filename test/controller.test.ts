@@ -147,4 +147,9 @@ describe("HarnessController", () => {
 		const controller = new HarnessController(testConfig(), []);
 		expect(() => controller.handle({ type: "bogus.bogus" } as unknown as HarnessEvent)).toThrow();
 	});
+
+	test("context.compacted 缺 projection 时被拒绝", () => {
+		const controller = new HarnessController(testConfig(), []);
+		expect(() => controller.handle({ type: "context.compacted" } as unknown as HarnessEvent)).toThrow();
+	});
 });

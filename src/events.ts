@@ -17,13 +17,14 @@ export type HarnessEvent =
 	| { type: "tool.completed"; callId: string; tool: string; input: unknown; result: unknown; isError: boolean }
 	| { type: "agent.settled" }
 	| { type: "context.observed"; usedTokens: number; contextWindow: number }
-	| { type: "context.compacted" }
+	| { type: "context.compacted"; projection: string }
 	| { type: "session.ending" };
 
 export function isHarnessEvent(value: unknown): value is HarnessEvent {
 	if (typeof value !== "object" || value === null) return false;
-	const event = value as { type?: unknown };
-	return typeof event.type === "string" && HarnessEventTypes.has(event.type);
+	const event = value as { type?: unknown; projection?: unknown };
+	if (typeof event.type !== "string" || !HarnessEventTypes.has(event.type)) return false;
+	return event.type !== "context.compacted" || typeof event.projection === "string";
 }
 
 export const HarnessEventTypes: ReadonlySet<string> = new Set([

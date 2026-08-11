@@ -171,18 +171,24 @@ npm run typecheck # tsc --noEmit
 
 ```
 src/
-├── config.ts      配置加载、默认值、受管模型识别
-├── protocol.ts    本地编码协议文本（en/zh）
-├── session.ts     会话 telemetry + 验证命令识别
-├── shell.ts       bash 结构化只读分析
-├── gate.ts        契约门禁（拦截 + 升级引导）
-├── ledger.ts      任务契约/证据台账 + 报表格式化
-├── lock.ts        文件租约锁 + 模型 tool-call 探针
-├── loop.ts        Loop Guard
-├── quality.ts     空响应 / 空参工具调用监控
-├── readguard.ts   先读后改守卫
-├── watchdog.ts    Context Watchdog 压缩
-└── core.ts        re-export 公共表面
+├── adapter.ts      pi 接线：hooks、tools、commands、provider 锁、注入
+├── config.ts       配置加载、默认值、受管模型识别
+├── protocol.ts     本地编码协议文本（en/zh）
+├── session.ts      会话 telemetry + 验证命令识别
+├── shell.ts        bash 结构化只读分析
+├── gate.ts         契约门禁（拦截 + 升级引导）
+├── ledger.ts       任务契约/证据台账 + 报表格式化
+├── lock.ts         文件租约锁 + 模型 tool-call 探针
+├── loop.ts         工具调用签名 + 回合上限辅助
+├── quality.ts      回复质量判定辅助
+├── readguard.ts    先读后改守卫
+├── watchdog.ts     上下文压缩决策辅助
+├── controller.ts   事件 → policy 分发、状态回写
+├── events.ts       harness 事件类型
+├── state.ts        按 policy 归属的 harness 状态
+├── policy.ts       policy/directive 契约
+├── policies/       loop / quality / context / mutation / completion 各 policy
+└── core.ts         re-export 公共表面
 ```
 
 ## 许可证

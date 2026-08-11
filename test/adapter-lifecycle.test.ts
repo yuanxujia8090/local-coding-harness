@@ -382,3 +382,39 @@ describe("adapter resilience: hook 异常不冒泡 (review 问题 1)", () => {
 		expect(String(result?.reason)).toContain("contract");
 	});
 });
+
+describe("model 切换语义 (review 问题 2)", () => {
+	test("云端模型不触发干预，切回名单内本地模型恢复", async () => {
+		const stub = await setupHarness();
+		await stub.handlers.get("session_start")!({}, managedContext(undefined, stub.notifications).ctx);
+		const cloud = {
+			...managedContext(undefined, stub.notifications).ctx,
+			model: { provider: "openai", id: "gpt-4o" },
+		} as ExtensionContext;
+		const local = managedContext(undefined, stub.notifications).ctx;
+
+		stub.handlers.get("turn_start")!({}, cloud);
+		await stub.handlers.get("turn_end")!({ message: { content: [], stopReason: "end_turn" } }, cloud);
+		stub.handlers.get("turn_start")!({}, cloud);
+		await stub.handlers.get("turn_end")!({ message: { content: [], stopReason: "end_turn" } }, cloud);
+		expect(stub.userMessages.filter((m) => m.includes("[local-model-harness]"))).toHaveLength(0);
+
+		stub.handlers.get("turn_start")!({}, local);
+		await stub.handlers.get("turn_end")!({ message: { content: [], stopReason: "end_turn" } }, local);
+		expect(stub.userMessages.some((m) => m.includes("[local-model-harness]"))).toBe(true);
+	});
+
+	test("model_select 切换时 status 与 turnCap 边界重置", async () => {
+		const stub = await setupHarness();
+		const statuses: Array<[string, string | undefined]> = [];
+		const ctx = managedContext(undefined, stub.notifications).ctx;
+		ctx.ui.setStatus = (key: string, value?: string) => statuses.push([key, value]);
+
+		stub.handlers.get("model_select")!({ model: { provider: "openai", id: "gpt-4o" } }, ctx);
+		expect(statuses).toContainEqual(["local-model-harness", undefined]);
+
+		statuses.splice(0);
+		stub.handlers.get("model_select")!({ model: { provider: "lmstudio", id: "managed-model" } }, ctx);
+		expect(statuses).toContainEqual(["local-model-harness", "active"]);
+	});
+});

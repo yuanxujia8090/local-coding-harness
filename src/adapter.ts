@@ -361,8 +361,18 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		lastInjectedBlock = undefined;
 	});
 
-	pi.on("model_select", (event) => {
-		telemetry.setModel(modelId(event.model as { id?: unknown }));
+	pi.on("model_select", (event, ctx) => {
+		safeRun("model_select", () => {
+			telemetry.setModel(modelId(event.model as { id?: unknown }));
+			// 切换模型是 turnCap 分段边界：run 中切走再切回不继承此前轮数
+			// （review 问题 2），taskLedger/telemetry 继续跨模型共享。
+			turnCap.reset();
+			const managed = isManagedLocalModel(
+				event.model as { provider?: unknown; id?: unknown } | undefined,
+				config,
+			);
+			ctx?.ui?.setStatus("local-model-harness", managed ? "active" : undefined);
+		});
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {

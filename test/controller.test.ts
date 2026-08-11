@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { HarnessController } from "../src/controller";
-import type { Directive, Policy } from "../src/policy";
-import type { HarnessEvent } from "../src/events";
-import type { HarnessConfig } from "../src/config";
-import type { HarnessState } from "../src/state";
+import type { Directive, Policy } from "../src/base/policy";
+import type { HarnessEvent } from "../src/base/events";
+import type { HarnessConfig } from "../src/base/config";
+import type { HarnessState } from "../src/base/state";
 
 function testConfig(): HarnessConfig {
 	return {

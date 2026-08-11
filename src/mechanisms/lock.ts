@@ -1,5 +1,5 @@
 import { open, readFile, unlink } from "node:fs/promises";
-import type { ToolProbeResult } from "./config";
+import type { ToolProbeResult } from "../base/config";
 
 export function parseToolProbe(response: unknown, toolName: string): ToolProbeResult {
 	const choices = (response as { choices?: unknown })?.choices;

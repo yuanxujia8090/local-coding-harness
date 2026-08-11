@@ -1,11 +1,11 @@
-import type { HarnessConfig } from "../config";
-import type { HarnessEvent } from "../events";
-import type { Directive, Policy } from "../policy";
-import type { HarnessState } from "../state";
-import type { TaskCompletionLedger } from "../ledger";
-import type { ContractGate } from "../gate";
-import type { ReadGuard } from "../readguard";
-import { buildContractBlockReason, buildGateSteerMessage } from "../gate";
+import type { HarnessConfig } from "../base/config";
+import type { HarnessEvent } from "../base/events";
+import type { Directive, Policy } from "../base/policy";
+import type { HarnessState } from "../base/state";
+import type { TaskCompletionLedger } from "../mechanisms/ledger";
+import type { ContractGate } from "../mechanisms/gate";
+import type { ReadGuard } from "../mechanisms/readguard";
+import { buildContractBlockReason, buildGateSteerMessage } from "../mechanisms/gate";
 
 type MutationPolicyDeps = {
 	ledger: TaskCompletionLedger;

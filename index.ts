@@ -4,7 +4,7 @@ import {
 	loadHarnessConfig,
 	type ConfigLoadResult,
 } from "./src/core.ts";
-import { registerActiveAdapter } from "./src/adapter";
+import { registerActiveAdapter } from "./src/pi/adapter";
 
 const EXAMPLE_CONFIG = `{
   "provider": "lmstudio",

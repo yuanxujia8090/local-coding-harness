@@ -1,4 +1,4 @@
-import type { ProtocolLanguage } from "./config";
+import type { ProtocolLanguage } from "../base/config";
 
 export function buildContractBlockReason(language: ProtocolLanguage = "en"): string {
 	if (language === "zh") {

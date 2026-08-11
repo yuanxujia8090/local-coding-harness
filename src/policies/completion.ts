@@ -1,7 +1,7 @@
-import type { HarnessEvent } from "../events";
-import type { Directive, Policy } from "../policy";
-import type { HarnessState } from "../state";
-import type { TaskCompletionLedger } from "../ledger";
+import type { HarnessEvent } from "../base/events";
+import type { Directive, Policy } from "../base/policy";
+import type { HarnessState } from "../base/state";
+import type { TaskCompletionLedger } from "../mechanisms/ledger";
 
 type CompletionPolicyDeps = {
 	ledger: TaskCompletionLedger;

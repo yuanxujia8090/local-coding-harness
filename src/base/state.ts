@@ -1,5 +1,5 @@
 import type { ModelReference } from "./config";
-import type { TaskCompletionSnapshot } from "./ledger";
+import type { TaskCompletionSnapshot } from "../mechanisms/ledger";
 import type { HarnessEvent } from "./events";
 import type { Directive } from "./policy";
 

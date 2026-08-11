@@ -1,10 +1,10 @@
-import type { HarnessConfig } from "../config";
-import type { HarnessEvent } from "../events";
-import type { Directive, Policy } from "../policy";
-import type { HarnessState } from "../state";
-import { toolCallSignature } from "../loop";
-import { isStateChangingTool } from "../shell";
-import type { QualityBlock } from "../quality";
+import type { HarnessConfig } from "../base/config";
+import type { HarnessEvent } from "../base/events";
+import type { Directive, Policy } from "../base/policy";
+import type { HarnessState } from "../base/state";
+import { toolCallSignature } from "../mechanisms/loop";
+import { isStateChangingTool } from "../mechanisms/shell";
+import type { QualityBlock } from "../mechanisms/quality";
 
 /** 死循环与 research drift 政策（原 loop.ts 路径）。只读 state 中的窗口
  *  与 drift 计数做判定，通过 record 指令把推进后的状态写回 controller。 */

@@ -17,16 +17,16 @@ import {
 	isVerificationCommand,
 	parseToolProbe,
 	type HarnessConfig,
-} from "./core.ts";
-import { HarnessController } from "./controller";
-import { createCompletionPolicy } from "./policies/completion";
-import { createMutationPolicy } from "./policies/mutation";
-import { createLoopPolicy } from "./policies/loop";
-import { createQualityPolicy } from "./policies/quality";
-import { createContextPolicy } from "./policies/context";
-import type { Directive } from "./policy";
-import type { HarnessEvent } from "./events";
-import type { QualityBlock } from "./quality";
+} from "../core.ts";
+import { HarnessController } from "../controller";
+import { createCompletionPolicy } from "../policies/completion";
+import { createMutationPolicy } from "../policies/mutation";
+import { createLoopPolicy } from "../policies/loop";
+import { createQualityPolicy } from "../policies/quality";
+import { createContextPolicy } from "../policies/context";
+import type { Directive } from "../base/policy";
+import type { HarnessEvent } from "../base/events";
+import type { QualityBlock } from "../mechanisms/quality";
 
 const PROBE_TOOL = "pi_local_probe";
 const INJECTION_CUSTOM_TYPE = "local-harness-context";

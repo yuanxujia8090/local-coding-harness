@@ -160,28 +160,30 @@ npm test          # vitest
 npm run typecheck # tsc --noEmit
 ```
 
-Core logic is pure TypeScript with zero pi imports, split per concern under `src/` so every mechanism stays unit-testable; `src/core.ts` is a barrel that re-exports them and `index.ts` is the pi wiring:
+Core logic is pure TypeScript with zero pi imports, split per concern under `src/` so every mechanism stays unit-testable; `src/core.ts` is a barrel that re-exports them and `index.ts` is the pi wiring. The only pi-integration file lives in `src/pi/`:
 
 ```
 src/
-├── adapter.ts      pi wiring: hooks, tools, commands, provider lock, injection
-├── config.ts       config loading, defaults, managed-model detection
-├── protocol.ts     local coding protocol text (en/zh)
-├── session.ts      session telemetry + verification-command detection
-├── shell.ts        structural bash read-only analysis
-├── gate.ts         contract gate (blocking + escalation)
-├── ledger.ts       task contract/evidence ledger + report formatting
-├── lock.ts         file-lease lock + model tool-call probe
-├── loop.ts         tool-call signature + turn cap helpers
-├── quality.ts      response-quality verdict helpers
-├── readguard.ts    require-read-before-edit guard
-├── watchdog.ts     context compaction decision helpers
-├── controller.ts   event → policy dispatch, state write-back
-├── events.ts       harness event types
-├── state.ts        harness state owned per policy
-├── policy.ts       policy/directive contracts
-├── policies/       loop / quality / context / mutation / completion policies
-└── core.ts         re-exports the public surface
+├── pi/adapter.ts    pi wiring: hooks, tools, commands, provider lock, injection
+├── base/            config, events, state, policy contracts
+│   ├── config.ts    config loading, defaults, managed-model detection
+│   ├── events.ts    harness event types
+│   ├── state.ts     harness state owned per policy
+│   └── policy.ts    policy/directive contracts
+├── mechanisms/      pure mechanisms, no pi imports
+│   ├── protocol.ts  local coding protocol text (en/zh)
+│   ├── session.ts   session telemetry + verification-command detection
+│   ├── shell.ts     structural bash read-only analysis
+│   ├── gate.ts      contract gate (blocking + escalation)
+│   ├── ledger.ts    task contract/evidence ledger + report formatting
+│   ├── lock.ts      file-lease lock + model tool-call probe
+│   ├── loop.ts      tool-call signature + turn cap helpers
+│   ├── quality.ts   response-quality verdict helpers
+│   ├── readguard.ts require-read-before-edit guard
+│   └── watchdog.ts  context compaction decision helpers
+├── controller.ts    event → policy dispatch, state write-back
+├── policies/        loop / quality / context / mutation / completion policies
+└── core.ts          re-exports the public surface
 ```
 
 ## License

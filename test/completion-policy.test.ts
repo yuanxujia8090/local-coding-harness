@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { TaskCompletionLedger } from "../src/ledger";
+import { TaskCompletionLedger } from "../src/mechanisms/ledger";
 import { createCompletionPolicy } from "../src/policies/completion";
 import { HarnessController } from "../src/controller";
-import type { HarnessConfig } from "../src/config";
+import type { HarnessConfig } from "../src/base/config";
 
 function testConfig(): HarnessConfig {
 	return {

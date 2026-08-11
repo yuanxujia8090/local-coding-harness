@@ -3,9 +3,9 @@ import { HarnessController } from "../src/controller";
 import { createLoopPolicy } from "../src/policies/loop";
 import { createQualityPolicy } from "../src/policies/quality";
 import { createContextPolicy } from "../src/policies/context";
-import type { HarnessConfig } from "../src/config";
-import type { Directive, Policy } from "../src/policy";
-import type { QualityBlock } from "../src/quality";
+import type { HarnessConfig } from "../src/base/config";
+import type { Directive, Policy } from "../src/base/policy";
+import type { QualityBlock } from "../src/mechanisms/quality";
 
 function testConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfig {
 	return {

@@ -1,5 +1,5 @@
 import type { ModelReference } from "./config";
-import type { QualityBlock } from "./quality";
+import type { QualityBlock } from "../mechanisms/quality";
 
 /** Harness 语义事件，统一现有 Pi hook 行为。事件名不复制 Pi hook 名；
  *  Pi API 变化时只改 adapter。语义见架构文档 4.1。

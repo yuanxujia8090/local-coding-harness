@@ -1,8 +1,8 @@
-import type { HarnessConfig } from "../config";
-import type { HarnessEvent } from "../events";
-import type { Directive, Policy } from "../policy";
-import type { HarnessState } from "../state";
-import { assessResponseQuality, type QualityBlock } from "../quality";
+import type { HarnessConfig } from "../base/config";
+import type { HarnessEvent } from "../base/events";
+import type { Directive, Policy } from "../base/policy";
+import type { HarnessState } from "../base/state";
+import { assessResponseQuality, type QualityBlock } from "../mechanisms/quality";
 
 const MAX_CONSECUTIVE_STEERS = 2;
 

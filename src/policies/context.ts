@@ -1,8 +1,8 @@
-import type { HarnessConfig } from "../config";
-import type { HarnessEvent } from "../events";
-import type { Directive, Policy } from "../policy";
-import type { HarnessState } from "../state";
-import { evolveWatchdog, type WatchdogState } from "../watchdog";
+import type { HarnessConfig } from "../base/config";
+import type { HarnessEvent } from "../base/events";
+import type { Directive, Policy } from "../base/policy";
+import type { HarnessState } from "../base/state";
+import { evolveWatchdog, type WatchdogState } from "../mechanisms/watchdog";
 
 /** 上下文压力政策（原 watchdog.ts + index turn_end 路径）。
  *  - turn.end 带 contextPercent：达阈值 -> compact；compaction 后仍高 -> pause。

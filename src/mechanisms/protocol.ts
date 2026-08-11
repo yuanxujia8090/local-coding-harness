@@ -1,4 +1,4 @@
-import type { ProtocolLanguage } from "./config";
+import type { ProtocolLanguage } from "../base/config";
 
 const PROTOCOL_EN = `
 ## Local Coding Protocol

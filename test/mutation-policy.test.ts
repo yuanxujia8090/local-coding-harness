@@ -1,10 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { ContractGate } from "../src/gate";
-import { ReadGuard } from "../src/readguard";
-import { TaskCompletionLedger } from "../src/ledger";
+import { ContractGate } from "../src/mechanisms/gate";
+import { ReadGuard } from "../src/mechanisms/readguard";
+import { TaskCompletionLedger } from "../src/mechanisms/ledger";
 import { createMutationPolicy } from "../src/policies/mutation";
 import { HarnessController } from "../src/controller";
-import type { HarnessConfig } from "../src/config";
+import type { HarnessConfig } from "../src/base/config";
 
 function testConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfig {
 	return {

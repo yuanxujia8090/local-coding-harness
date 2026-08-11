@@ -1,8 +1,8 @@
-import type { HarnessConfig } from "./config";
-import { isHarnessEvent, type HarnessEvent } from "./events";
-import { mergeDirectives, type Directive, type Policy } from "./policy";
-import { applyEvent, applyPolicyRecord, initialHarnessState, type HarnessState } from "./state";
-import type { TaskCompletionSnapshot } from "./ledger";
+import type { HarnessConfig } from "./base/config";
+import { isHarnessEvent, type HarnessEvent } from "./base/events";
+import { mergeDirectives, type Directive, type Policy } from "./base/policy";
+import { applyEvent, applyPolicyRecord, initialHarnessState, type HarnessState } from "./base/state";
+import type { TaskCompletionSnapshot } from "./mechanisms/ledger";
 
 /** 唯一编排入口（架构 4.5）。不调用 Pi API，事件与状态都是纯逻辑，
  *  便于单元测试直接输入事件轨迹。 */

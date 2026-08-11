@@ -167,26 +167,28 @@ npm test          # vitest
 npm run typecheck # tsc --noEmit
 ```
 
-核心逻辑是纯 TypeScript，零 pi 依赖，按职责拆分在 `src/` 下各文件，每个机制保持可单元测试；`src/core.ts` 是桶文件（barrel），只负责 re-export 公共接口；`index.ts` 是 pi 接线层：
+核心逻辑是纯 TypeScript，零 pi 依赖，按职责拆分在 `src/` 下各文件，每个机制保持可单元测试；`src/core.ts` 是桶文件（barrel），只负责 re-export 公共接口；`index.ts` 是 pi 接线层。唯一 pi 集成文件位于 `src/pi/`：
 
 ```
 src/
-├── adapter.ts      pi 接线：hooks、tools、commands、provider 锁、注入
-├── config.ts       配置加载、默认值、受管模型识别
-├── protocol.ts     本地编码协议文本（en/zh）
-├── session.ts      会话 telemetry + 验证命令识别
-├── shell.ts        bash 结构化只读分析
-├── gate.ts         契约门禁（拦截 + 升级引导）
-├── ledger.ts       任务契约/证据台账 + 报表格式化
-├── lock.ts         文件租约锁 + 模型 tool-call 探针
-├── loop.ts         工具调用签名 + 回合上限辅助
-├── quality.ts      回复质量判定辅助
-├── readguard.ts    先读后改守卫
-├── watchdog.ts     上下文压缩决策辅助
+├── pi/adapter.ts   pi 接线：hooks、tools、commands、provider 锁、注入
+├── base/           配置 / 事件 / 状态 / policy 契约
+│   ├── config.ts   配置加载、默认值、受管模型识别
+│   ├── events.ts   harness 事件类型
+│   ├── state.ts    按 policy 归属的 harness 状态
+│   └── policy.ts   policy/directive 契约
+├── mechanisms/     纯机制，零 pi 依赖
+│   ├── protocol.ts 本地编码协议文本（en/zh）
+│   ├── session.ts  会话 telemetry + 验证命令识别
+│   ├── shell.ts    bash 结构化只读分析
+│   ├── gate.ts     契约门禁（拦截 + 升级引导）
+│   ├── ledger.ts   任务契约/证据台账 + 报表格式化
+│   ├── lock.ts     文件租约锁 + 模型 tool-call 探针
+│   ├── loop.ts     工具调用签名 + 回合上限辅助
+│   ├── quality.ts  回复质量判定辅助
+│   ├── readguard.ts 先读后改守卫
+│   └── watchdog.ts 上下文压缩决策辅助
 ├── controller.ts   事件 → policy 分发、状态回写
-├── events.ts       harness 事件类型
-├── state.ts        按 policy 归属的 harness 状态
-├── policy.ts       policy/directive 契约
 ├── policies/       loop / quality / context / mutation / completion 各 policy
 └── core.ts         re-export 公共表面
 ```

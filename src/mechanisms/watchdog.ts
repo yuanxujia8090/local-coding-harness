@@ -1,4 +1,4 @@
-import { WATCHDOG_RESUME_MARGIN_PERCENT } from "./config";
+import { WATCHDOG_RESUME_MARGIN_PERCENT } from "../base/config";
 
 export type WatchdogDecision =
 	| { action: "none"; reason?: string }

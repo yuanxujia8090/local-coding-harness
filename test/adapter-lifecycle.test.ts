@@ -36,6 +36,7 @@ type Stub = {
 	userMessages: string[];
 	notifications: string[];
 	tools: Map<string, (arg0: unknown, arg1: unknown) => unknown>;
+	entries: Array<{ type: string; at: string; [key: string]: unknown }>;
 };
 
 function createPiStub(): Stub {
@@ -46,6 +47,7 @@ function createPiStub(): Stub {
 		userMessages: [],
 		notifications: [],
 		tools: new Map(),
+		entries: [],
 	};
 	const pi = {
 		on(event: unknown, handler: (arg0: unknown, arg1: unknown) => unknown) {
@@ -55,7 +57,9 @@ function createPiStub(): Stub {
 			stub.tools.set(definition.name, definition.execute);
 		},
 		registerCommand() {},
-		appendEntry() {},
+		appendEntry(type: string, data: Record<string, unknown>) {
+			stub.entries.push({ type, at: String(data.at ?? ""), ...data });
+		},
 		sendMessage() {},
 		sendUserMessage(message: unknown) {
 			stub.userMessages.push(String(message));
@@ -312,5 +316,69 @@ describe("adapter lifecycle: compact 共享 verification projection (审查第�
 		const injected = stub.userMessages.filter((message) => message.includes("Coding Protocol"));
 		expect(injected).toHaveLength(2);
 		expect(injected.every((message) => message.includes("Verification State"))).toBe(true);
+	});
+});
+
+describe("adapter resilience: hook 异常不冒泡 (review 问题 1)", () => {
+	test("sendUserMessage 抛错 -> turn_end 不抛、错误落 local-error、后续 hook 仍工作", async () => {
+		const stub = await setupHarness();
+		await stub.handlers.get("session_start")!({}, managedContext(undefined, stub.notifications).ctx);
+		const emptyTurn = () =>
+			stub.handlers.get("turn_end")!({ message: { content: [], stopReason: "end_turn" } }, managedContext(undefined, stub.notifications).ctx);
+
+		stub.handlers.get("turn_start")!({}, managedContext(undefined, stub.notifications).ctx);
+		await emptyTurn();
+		stub.pi.sendUserMessage = () => {
+			throw new Error("boom: inject failed");
+		};
+		stub.handlers.get("turn_start")!({}, managedContext(undefined, stub.notifications).ctx);
+		await expect(emptyTurn()).resolves.not.toThrow();
+
+		const errors = stub.entries.filter((entry) => entry.type === "local-error");
+		expect(errors.length).toBeGreaterThan(0);
+		expect(errors.some((entry) => String(entry.hook).includes("applyDirectives"))).toBe(true);
+
+		stub.pi.sendUserMessage = (message: unknown) => {
+			stub.userMessages.push(String(message));
+		};
+		stub.handlers.get("turn_start")!({}, managedContext(undefined, stub.notifications).ctx);
+		await stub.handlers.get("turn_end")!({ message: { content: [], stopReason: "end_turn" } }, managedContext(undefined, stub.notifications).ctx);
+		expect(stub.userMessages.some((message) => message.includes("[local-model-harness]"))).toBe(true);
+	});
+
+	test("getContextUsage 抛错 -> turn_end 不抛且锁仍释放，后续可重新取得", async () => {
+		const stub = await setupHarness();
+		await stub.handlers.get("session_start")!({}, managedContext(undefined, stub.notifications).ctx);
+
+		const ctx = managedContext(undefined, stub.notifications).ctx;
+		const brokenCtx = {
+			...ctx,
+			getContextUsage: () => {
+				throw new Error("boom: usage unavailable");
+			},
+		} as ExtensionContext;
+
+		await expect(
+			stub.handlers.get("turn_end")!({ message: { content: [{ type: "text", text: "work" }], stopReason: "end_turn" } }, brokenCtx),
+		).resolves.not.toThrow();
+
+		await expect(stub.handlers.get("session_shutdown")!({}, ctx)).resolves.not.toThrow();
+		const acquireCtx = managedContext(undefined, stub.notifications).ctx;
+		await expect(stub.handlers.get("before_provider_request")!({}, acquireCtx)).resolves.not.toThrow();
+	});
+
+	test("干预副作用抛错时契约门禁仍返回 block（fail-closed）", async () => {
+		const stub = await setupHarness();
+		await stub.handlers.get("session_start")!({}, managedContext(undefined, stub.notifications).ctx);
+		stub.pi.sendUserMessage = () => {
+			throw new Error("boom");
+		};
+
+		const result = stub.handlers.get("tool_call")!(
+			{ toolCallId: "c1", toolName: "edit", input: { path: "src/index.ts" } },
+			managedContext(undefined, stub.notifications).ctx,
+		) as { block?: boolean; reason?: string } | undefined;
+		expect(result).toMatchObject({ block: true });
+		expect(String(result?.reason)).toContain("contract");
 	});
 });

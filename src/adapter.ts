@@ -66,6 +66,36 @@ function addAuthHeader(headers: Headers, apiKey: string | undefined): void {
  *  telemetry/ledger 持久化与 provider lock。机制判定在 policies/controller，
  *  阈值与计数器不在本层。 */
 export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): void {
+	function recordError(hook: string, error: unknown): void {
+		try {
+			pi.appendEntry("local-error", {
+				at: new Date().toISOString(),
+				hook,
+				error: error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error),
+			});
+		} catch {
+			// appendEntry 自身失败时不再抛：兜底必须静默。
+		}
+	}
+
+	function safeRun<T>(hook: string, fn: () => T, fallback?: () => T): T | undefined {
+		try {
+			return fn();
+		} catch (error) {
+			recordError(hook, error);
+			return fallback?.();
+		}
+	}
+
+	async function safeRunAsync<T>(hook: string, fn: () => Promise<T>, fallback?: () => Promise<T>): Promise<T | undefined> {
+		try {
+			return await fn();
+		} catch (error) {
+			recordError(hook, error);
+			return fallback?.();
+		}
+	}
+
 	const lock = new FileLeaseLock(config.lockPath);
 	let lockHeld = false;
 	let telemetry = new SessionTelemetry();
@@ -98,40 +128,44 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		let compacted = false;
 		let injected: string | undefined;
 		for (const directive of directives) {
-			switch (directive.kind) {
-				case "block":
-					blocked = true;
-					blockReason = directive.reason;
-					break;
-				case "steer":
-					if (directive.policy === "loop") telemetry.recordLoopIntervention();
-					pi.sendUserMessage(directive.message, { deliverAs: "steer" });
-					break;
-				case "notify":
-					if (!notified) {
-						ctx.ui.notify(directive.message, directive.level);
-						notified = true;
-					}
-					break;
-				case "inject":
-					if (!injected) {
+			try {
+				switch (directive.kind) {
+					case "block":
+						blocked = true;
+						blockReason = directive.reason;
+						break;
+					case "steer":
+						if (directive.policy === "loop") telemetry.recordLoopIntervention();
 						pi.sendUserMessage(directive.message, { deliverAs: "steer" });
-						injected = directive.message;
-					}
-					break;
-				case "compact":
-					if (!compacted) {
-						compacted = true;
-						telemetry.recordWatchdogCompaction();
-						ctx.ui.setStatus("local-model-watchdog", "Context watchdog: compacting");
-						ctx.compact();
-					}
-					break;
-				case "record":
-					// policy 中间状态已由 controller 回写，无须 adapter 动作。
-					break;
-				case "allow":
-					break;
+						break;
+					case "notify":
+						if (!notified) {
+							ctx.ui.notify(directive.message, directive.level);
+							notified = true;
+						}
+						break;
+					case "inject":
+						if (!injected) {
+							pi.sendUserMessage(directive.message, { deliverAs: "steer" });
+							injected = directive.message;
+						}
+						break;
+					case "compact":
+						if (!compacted) {
+							compacted = true;
+							telemetry.recordWatchdogCompaction();
+							ctx.ui.setStatus("local-model-watchdog", "Context watchdog: compacting");
+							ctx.compact();
+						}
+						break;
+					case "record":
+						// policy 中间状态已由 controller 回写，无须 adapter 动作。
+						break;
+					case "allow":
+						break;
+				}
+			} catch (error) {
+				recordError(`applyDirectives:${directive.kind}`, error);
 			}
 		}
 		return { blocked, blockReason, compacted, injected };
@@ -162,7 +196,15 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		let lastOwnerCheck = 0;
 		ctx.ui.setStatus("local-model-lock", "Local model: waiting for model slot");
 		ctx.ui.setWorkingMessage("Local model: waiting for model slot…");
-		while (!(await lock.tryAcquire())) {
+		while (true) {
+			try {
+				if (await lock.tryAcquire()) break;
+			} catch (error) {
+				recordError("acquireLock:tryAcquire", error);
+				ctx.ui.setStatus("local-model-lock", undefined);
+				ctx.ui.setWorkingMessage();
+				return;
+			}
 			await sleep(250, ctx.signal);
 			const now = Date.now();
 			if (now - lastOwnerCheck >= 2_000) {
@@ -187,9 +229,14 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 
 	async function releaseLock(ctx: ExtensionContext): Promise<void> {
 		if (!lockHeld) return;
-		await lock.release();
-		lockHeld = false;
-		ctx.ui.setStatus("local-model-lock", undefined);
+		try {
+			await lock.release();
+			ctx.ui.setStatus("local-model-lock", undefined);
+		} catch (error) {
+			recordError("releaseLock", error);
+		} finally {
+			lockHeld = false;
+		}
 	}
 
 	function recordContextUsage(ctx: ExtensionContext): void {
@@ -295,7 +342,9 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 			if (!probe.ok) throw new Error(probe.reason);
 			report(`Local model ready: ${model.id}; /models and tool-call probe passed.`);
 		} catch (error) {
-			report(`Local model check failed for ${modelLabel(ctx)}: ${error instanceof Error ? error.message : String(error)}`);
+			safeRun("runDoctor:report", () => {
+				report(`Local model check failed for ${modelLabel(ctx)}: ${error instanceof Error ? error.message : String(error)}`);
+			});
 		} finally {
 			await releaseLock(ctx);
 		}
@@ -318,132 +367,158 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 
 	pi.on("before_agent_start", (event, ctx) => {
 		if (!isManagedSession(ctx)) return;
-		turnCap.reset();
-		if (taskLedger.snapshot().completed) {
-			taskLedger = new TaskCompletionLedger();
-			controller = createController();
-		}
-		telemetry.setModel(modelLabel(ctx));
-		const block = buildInjectionBlock();
-		if (block === lastInjectedBlock) return;
-		lastInjectedBlock = block;
-		return { message: { customType: INJECTION_CUSTOM_TYPE, content: block, display: false } };
+		return safeRun("before_agent_start", () => {
+			turnCap.reset();
+			if (taskLedger.snapshot().completed) {
+				taskLedger = new TaskCompletionLedger();
+				controller = createController();
+			}
+			telemetry.setModel(modelLabel(ctx));
+			const block = buildInjectionBlock();
+			if (block === lastInjectedBlock) return;
+			lastInjectedBlock = block;
+			return { message: { customType: INJECTION_CUSTOM_TYPE, content: block, display: false } };
+		});
 	});
 
 	pi.on("before_provider_request", async (_event, ctx) => {
 		if (!isManagedSession(ctx)) return;
 		const startedAt = performance.now();
-		await acquireLock(ctx);
+		await safeRunAsync("before_provider_request", () => acquireLock(ctx));
 		telemetry.recordProviderRequest(performance.now() - startedAt);
 	});
 
 	pi.on("turn_start", (_event, ctx) => {
 		if (!isManagedSession(ctx)) return;
-		// turn.started 先入 controller：session.turns 是 quality 等跨回合
-		// 去重的窗口依据（审查 F0/P0），随后再处理 turn cap。
-		applyDirectives(emit({ type: "turn.started" }), ctx);
-		if (turnCap.record()) {
-			telemetry.recordLoopIntervention();
-			ctx.ui.notify(
-				`local-model-harness: the model exceeded the turn cap (${config.turnCapMaxTurns}) for this run — stopping the loop.`,
-				"warning",
-			);
-			ctx.abort();
-		}
+		safeRun("turn_start", () => {
+			// turn.started 先入 controller：session.turns 是 quality 等跨回合
+			// 去重的窗口依据（审查 F0/P0），随后再处理 turn cap。
+			applyDirectives(emit({ type: "turn.started" }), ctx);
+			if (turnCap.record()) {
+				telemetry.recordLoopIntervention();
+				ctx.ui.notify(
+					`local-model-harness: the model exceeded the turn cap (${config.turnCapMaxTurns}) for this run — stopping the loop.`,
+					"warning",
+				);
+				ctx.abort();
+			}
+		});
 	});
 
 	pi.on("tool_call", (event, ctx) => {
-		if (isManagedSession(ctx)) {
-			// 契约门禁、read guard、死循环检测均走 policy（Task 3/4 迁移）：
-			// 该事件触发 completion/mutation/loop 三个 policy 的判定。
-			const { blocked, blockReason } = applyDirectives(
-				emit({ type: "tool.requested", callId: event.toolCallId, tool: event.toolName, input: event.input }),
-				ctx,
-			);
-			if (blocked) {
-				return { block: true, reason: blockReason ?? "Blocked by local-model-harness." };
-			}
-		}
+		const result = safeRun(
+			"tool_call",
+			() => {
+				if (isManagedSession(ctx)) {
+					// 契约门禁、read guard、死循环检测均走 policy（Task 3/4 迁移）：
+					// 该事件触发 completion/mutation/loop 三个 policy 的判定。
+					const { blocked, blockReason } = applyDirectives(
+						emit({ type: "tool.requested", callId: event.toolCallId, tool: event.toolName, input: event.input }),
+						ctx,
+					);
+					if (blocked) {
+						return { block: true, reason: blockReason ?? "Blocked by local-model-harness." };
+					}
+				}
+				return;
+			},
+			() => (config.gateEnabled ? { block: true, reason: "local-model-harness internal error (fail-closed)." } : undefined),
+		);
+		if (result) return result;
 
 		taskLedger.recordToolCall(event.toolCallId, event.toolName, event.input);
 	});
 
 	pi.on("tool_result", (event, ctx) => {
-		taskLedger.recordToolResult(event.toolCallId, event.toolName, event.input, event.isError);
-		if (!isManagedSession(ctx)) return;
-		telemetry.recordToolResult(event.toolName, event.input, event.isError);
-		if ((event.toolName === "edit" || event.toolName === "write") && !event.isError) {
-			unverifiedWarningShown = false;
-		}
-		if (event.toolName === "bash" && !event.isError && typeof event.input.command === "string" && isVerificationCommand(event.input.command)) {
-			unverifiedWarningShown = false;
-		}
+		safeRun("tool_result", () => {
+			taskLedger.recordToolResult(event.toolCallId, event.toolName, event.input, event.isError);
+			if (!isManagedSession(ctx)) return;
+			telemetry.recordToolResult(event.toolName, event.input, event.isError);
+			if ((event.toolName === "edit" || event.toolName === "write") && !event.isError) {
+				unverifiedWarningShown = false;
+			}
+			if (event.toolName === "bash" && !event.isError && typeof event.input.command === "string" && isVerificationCommand(event.input.command)) {
+				unverifiedWarningShown = false;
+			}
+		});
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
-		if (isManagedSession(ctx)) {
-			recordContextUsage(ctx);
-			const message = _event.message as { content?: unknown; stopReason?: unknown } | undefined;
-			const stopReason = typeof message?.stopReason === "string" ? message.stopReason : undefined;
-			const content = Array.isArray(message?.content)
-				? (message.content as Parameters<typeof assessResponseQuality>[0])
-				: undefined;
-			// quality / research drift / watchdog 判定全部走 policy（Task 3）：
-			// 一次 turn.end 事件触发这三个政策的评估，Policies 的指令由
-			// applyDirectives 化为 steer/notify/compact 等实际干预。
-			const contextPercent = ctx.getContextUsage()?.percent ?? undefined;
-			const { compacted } = emitAndSync(
-				{ type: "turn.end", content, stopReason, contextPercent },
-				ctx,
-			);
-			// watchdog pause/resume 的 status 语义由 controller 快照回写。
-			const snapshotContext = controller.snapshot().context;
-			if (compacted) {
-				ctx.ui.setStatus("local-model-watchdog", "Context watchdog: compacting");
-			} else if (snapshotContext.paused) {
-				ctx.ui.setStatus("local-model-watchdog", "Context watchdog: paused");
-			} else {
-				ctx.ui.setStatus("local-model-watchdog", undefined);
+		try {
+			if (isManagedSession(ctx)) {
+				recordContextUsage(ctx);
+				const message = _event.message as { content?: unknown; stopReason?: unknown } | undefined;
+				const stopReason = typeof message?.stopReason === "string" ? message.stopReason : undefined;
+				const content = Array.isArray(message?.content)
+					? (message.content as Parameters<typeof assessResponseQuality>[0])
+					: undefined;
+				// quality / research drift / watchdog 判定全部走 policy（Task 3）：
+				// 一次 turn.end 事件触发这三个政策的评估，Policies 的指令由
+				// applyDirectives 化为 steer/notify/compact 等实际干预。
+				const contextPercent = ctx.getContextUsage()?.percent ?? undefined;
+				const { compacted } = emitAndSync(
+					{ type: "turn.end", content, stopReason, contextPercent },
+					ctx,
+				);
+				// watchdog pause/resume 的 status 语义由 controller 快照回写。
+				const snapshotContext = controller.snapshot().context;
+				if (compacted) {
+					ctx.ui.setStatus("local-model-watchdog", "Context watchdog: compacting");
+				} else if (snapshotContext.paused) {
+					ctx.ui.setStatus("local-model-watchdog", "Context watchdog: paused");
+				} else {
+					ctx.ui.setStatus("local-model-watchdog", undefined);
+				}
 			}
+		} catch (error) {
+			recordError("turn_end", error);
+		} finally {
+			await releaseLock(ctx);
 		}
-		await releaseLock(ctx);
 	});
 
 	pi.on("session_compact", (_event, ctx) => {
 		if (!isManagedSession(ctx)) return;
-		// watchdog 或手动压缩后统一走 ContextPolicy：注入协议与任务状态，
-		// 并在 controller 内推进 context 状态（审查 F1/P1）。pendingCompact 由
-		// 下一个 turn.end 的 evolveWatchdog 消费，这里不清除，避免破坏
-		// 「压缩后仍高 -> pause」的判定。
-		const { injected } = applyDirectives(emit({ type: "context.compacted", projection: buildInjectionBlock() }), ctx);
-		telemetry.recordCompaction();
-		// 把 compact 实际投递的 payload 写回 lastInjectedBlock：cache 的语义是
-		// 「模型上下文里最近一次注入的完整内容」，谁最后投递就归谁。下一
-		// 次 before_agent_start 只在内容真正变化时重投（审查第三轮 P1）。若
-		// 不更新，契约建立后 compact 注入的 protocol + Task State 会被旧的
-		// protocol-only 缓存误判为「不同」而重复投递。
-		if (injected !== undefined) {
-			lastInjectedBlock = injected;
-		}
+		safeRun("session_compact", () => {
+			// watchdog 或手动压缩后统一走 ContextPolicy：注入协议与任务状态，
+			// 并在 controller 内推进 context 状态（审查 F1/P1）。pendingCompact 由
+			// 下一个 turn.end 的 evolveWatchdog 消费，这里不清除，避免破坏
+			// 「压缩后仍高 -> pause」的判定。
+			const { injected } = applyDirectives(emit({ type: "context.compacted", projection: buildInjectionBlock() }), ctx);
+			telemetry.recordCompaction();
+			// 把 compact 实际投递的 payload 写回 lastInjectedBlock：cache 的语义是
+			// 「模型上下文里最近一次注入的完整内容」，谁最后投递就归谁。下一
+			// 次 before_agent_start 只在内容真正变化时重投（审查第三轮 P1）。若
+			// 不更新，契约建立后 compact 注入的 protocol + Task State 会被旧的
+			// protocol-only 缓存误判为「不同」而重复投递。
+			if (injected !== undefined) {
+				lastInjectedBlock = injected;
+			}
+		});
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (isManagedSession(ctx)) {
-			recordContextUsage(ctx);
-			const snapshot = persistTelemetry();
-			const task = taskLedger.snapshot();
-			// 任务未完成续跑 steer 走 completionPolicy（dedupeKey 防止重复 followUp）。
-			applyDirectives(emit({ type: "agent.settled" }), ctx);
-			if (snapshot.verificationPending && !unverifiedWarningShown) {
-				pi.sendMessage({
-					customType: "local-verification",
-					content: `Unverified local changes: ${snapshot.changedFiles.join(", ")}.`,
-					display: true,
-				});
-				unverifiedWarningShown = true;
+		try {
+			if (isManagedSession(ctx)) {
+				recordContextUsage(ctx);
+				const snapshot = persistTelemetry();
+				const task = taskLedger.snapshot();
+				// 任务未完成续跑 steer 走 completionPolicy（dedupeKey 防止重复 followUp）。
+				applyDirectives(emit({ type: "agent.settled" }), ctx);
+				if (snapshot.verificationPending && !unverifiedWarningShown) {
+					pi.sendMessage({
+						customType: "local-verification",
+						content: `Unverified local changes: ${snapshot.changedFiles.join(", ")}.`,
+						display: true,
+					});
+					unverifiedWarningShown = true;
+				}
 			}
+		} catch (error) {
+			recordError("agent_settled", error);
+		} finally {
+			await releaseLock(ctx);
 		}
-		await releaseLock(ctx);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

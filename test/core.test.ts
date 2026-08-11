@@ -5,13 +5,9 @@ import { join, resolve } from "node:path";
 import localModelHarness from "../index";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-	ContextWatchdog,
 	ContractGate,
 	FileLeaseLock,
-	LoopGuard,
-	QualityMonitor,
 	ReadGuard,
-	ResearchDriftGuard,
 	SessionTelemetry,
 	TaskCompletionLedger,
 	TurnCap,
@@ -512,54 +508,7 @@ describe("FileLeaseLock", () => {
 	});
 });
 
-describe("LoopGuard", () => {
-	test("flags the same call repeated window times in a row", () => {
-		const guard = new LoopGuard(3);
-
-		expect(guard.record("bash", { command: "npm test" })).toBeNull();
-		expect(guard.record("bash", { command: "npm test" })).toBeNull();
-		expect(guard.record("bash", { command: "npm test" })).toBe("bash:npm test");
-	});
-
-	test("does not flag interleaved calls", () => {
-		const guard = new LoopGuard(3);
-
-		guard.record("bash", { command: "npm test" });
-		guard.record("read", { path: "src/index.ts" });
-		guard.record("bash", { command: "npm test" });
-		expect(guard.record("bash", { command: "npm test" })).toBeNull();
-	});
-
-	test("notifies once per signature until reset", () => {
-		const guard = new LoopGuard(2);
-
-		expect(guard.record("bash", { command: "ls" })).toBeNull();
-		expect(guard.record("bash", { command: "ls" })).toBe("bash:ls");
-		expect(guard.record("bash", { command: "ls" })).toBeNull();
-		guard.reset();
-		expect(guard.record("bash", { command: "ls" })).toBeNull();
-		expect(guard.record("bash", { command: "ls" })).toBe("bash:ls");
-	});
-
-	test("a new state-changing call resets the repeat window", () => {
-		const guard = new LoopGuard(3);
-
-		guard.record("read", { path: "a.ts" });
-		guard.record("read", { path: "a.ts" });
-		guard.record("edit", { path: "a.ts" });
-		expect(guard.record("read", { path: "a.ts" })).toBeNull();
-		expect(guard.record("read", { path: "a.ts" })).toBeNull();
-		expect(guard.record("read", { path: "a.ts" })).toBe("read:a.ts");
-	});
-
-	test("repeating the same state-changing call still counts as a loop", () => {
-		const guard = new LoopGuard(3);
-
-		guard.record("bash", { command: "npm test" });
-		guard.record("bash", { command: "npm test" });
-		expect(guard.record("bash", { command: "npm test" })).toBe("bash:npm test");
-	});
-
+describe("toolCallSignature", () => {
 	test("signatures distinguish tools and inputs", () => {
 		expect(toolCallSignature("bash", { command: "npm test" })).toBe("bash:npm test");
 		expect(toolCallSignature("edit", { path: "src/a.ts" })).toBe("edit:src/a.ts");
@@ -599,58 +548,7 @@ describe("TurnCap", () => {
 	});
 });
 
-describe("ResearchDriftGuard", () => {
-	test("flags a run of read-only turns without findings", () => {
-		const guard = new ResearchDriftGuard(3);
-
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "grep", arguments: { path: "b.ts" } }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "find", arguments: { path: "c.ts" } }])).toBe(true);
-	});
-
-	test("resets on a textual finding", () => {
-		const guard = new ResearchDriftGuard(3);
-
-		guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }]);
-		guard.record([{ type: "toolCall", name: "read", arguments: { path: "b.ts" } }]);
-		expect(guard.record([{ type: "text", text: "I found the root cause." }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "d.ts" } }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "e.ts" } }])).toBe(true);
-	});
-
-	test("resets on a completion signal or state change", () => {
-		const guard = new ResearchDriftGuard(2);
-
-		guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }]);
-		expect(guard.record([{ type: "toolCall", name: "task_complete", arguments: {} }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "edit", arguments: { path: "b.ts" } }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(false);
-	});
-
-	test("does not count cancelled or mixed turns", () => {
-		const guard = new ResearchDriftGuard(3);
-
-		guard.record([]);
-		guard.record([{ type: "thinking", thinking: "planning..." }]);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "b.ts" } }])).toBe(false);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(true);
-	});
-
-	test("notifies once until it resets", () => {
-		const guard = new ResearchDriftGuard(2);
-
-		guard.record([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }]);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "b.ts" } }])).toBe(true);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "c.ts" } }])).toBe(false);
-		guard.record([{ type: "text", text: "Conclusion reached." }]);
-		guard.record([{ type: "toolCall", name: "read", arguments: { path: "d.ts" } }]);
-		expect(guard.record([{ type: "toolCall", name: "read", arguments: { path: "e.ts" } }])).toBe(true);
-	});
-});
-
-describe("QualityMonitor", () => {
+describe("assessResponseQuality", () => {
 	test("accepts a normal text response", () => {
 		expect(assessResponseQuality([{ type: "text", text: "Running the test suite." }])).toEqual({ ok: true });
 	});
@@ -680,16 +578,6 @@ describe("QualityMonitor", () => {
 		expect(assessResponseQuality([
 			{ type: "toolCall", name: "task_complete", arguments: {} },
 		])).toEqual({ ok: true });
-	});
-
-	test("monitor counts anomalies across turns", () => {
-		const monitor = new QualityMonitor();
-		monitor.record([]);
-		monitor.record([{ type: "toolCall", name: "bash", arguments: {} }]);
-		monitor.record([{ type: "text", text: "ok" }]);
-		expect(monitor.snapshot()).toEqual({ emptyResponses: 1, emptyToolCalls: 1 });
-		monitor.reset();
-		expect(monitor.snapshot()).toEqual({ emptyResponses: 0, emptyToolCalls: 0 });
 	});
 });
 
@@ -773,44 +661,6 @@ describe("buildContractBlockReason", () => {
 	test("steer message reports the block count", () => {
 		expect(buildGateSteerMessage(3, "en")).toContain("3 state-changing calls");
 		expect(buildGateSteerMessage(3, "zh")).toContain("3 次状态变更调用");
-	});
-});
-
-describe("ContextWatchdog", () => {
-	test("stays quiet below threshold and unknown usage", () => {
-		const watchdog = new ContextWatchdog(80);
-
-		expect(watchdog.observe(55)).toEqual({ action: "none" });
-		expect(watchdog.observe(null)).toEqual({ action: "none" });
-		expect(watchdog.observe(undefined)).toEqual({ action: "none" });
-	});
-
-	test("triggers compaction at threshold, then verifies the result", () => {
-		const watchdog = new ContextWatchdog(80);
-
-		expect(watchdog.observe(82)).toEqual({ action: "compact" });
-		expect(watchdog.observe(45)).toEqual({ action: "none" });
-		expect(watchdog.observe(83)).toEqual({ action: "compact" });
-	});
-
-	test("pauses when compaction fails to free enough context", () => {
-		const watchdog = new ContextWatchdog(80);
-
-		expect(watchdog.observe(85)).toEqual({ action: "compact" });
-		const paused = watchdog.observe(84);
-		expect(paused.action).toBe("pause");
-		expect(watchdog.isPaused).toBe(true);
-		expect(watchdog.observe(86)).toEqual({ action: "none" });
-	});
-
-	test("resumes once usage drops clearly below threshold", () => {
-		const watchdog = new ContextWatchdog(80);
-
-		watchdog.observe(85);
-		watchdog.observe(84);
-		expect(watchdog.observe(69)).toEqual({ action: "resume" });
-		expect(watchdog.isPaused).toBe(false);
-		expect(watchdog.observe(81)).toEqual({ action: "compact" });
 	});
 });
 

@@ -1,4 +1,4 @@
-import { DEFAULT_WATCHDOG_THRESHOLD_PERCENT, WATCHDOG_RESUME_MARGIN_PERCENT } from "./config";
+import { WATCHDOG_RESUME_MARGIN_PERCENT } from "./config";
 
 export type WatchdogDecision =
 	| { action: "none"; reason?: string }
@@ -6,7 +6,7 @@ export type WatchdogDecision =
 	| { action: "pause"; reason: string }
 	| { action: "resume" };
 
-/** watchdog 决策所需的共享状态（等价于旧 ContextWatchdog 私有字段）。 */
+/** watchdog 决策所需的共享状态。 */
 export type WatchdogState = {
 	paused: boolean;
 	pendingCompact: boolean;
@@ -52,27 +52,4 @@ export function evolveWatchdog(
 		};
 	}
 	return { decision: { action: "none" }, next: { ...current } };
-}
-
-/** 向后兼容（Task 6 之前 index 仍通过实例观察）。新逻辑请使用 decideWatchdog。 */
-export class ContextWatchdog {
-	private readonly state: WatchdogState = { paused: false, pendingCompact: false };
-
-	constructor(private readonly thresholdPercent: number = DEFAULT_WATCHDOG_THRESHOLD_PERCENT) {}
-
-	get isPaused(): boolean {
-		return this.state.paused;
-	}
-
-	reset(): void {
-		this.state.paused = false;
-		this.state.pendingCompact = false;
-	}
-
-	observe(percent: number | null | undefined): WatchdogDecision {
-		const { decision, next } = evolveWatchdog(this.state, this.thresholdPercent, percent);
-		this.state.paused = next.paused;
-		this.state.pendingCompact = next.pendingCompact;
-		return decision;
-	}
 }

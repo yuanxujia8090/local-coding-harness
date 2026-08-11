@@ -50,12 +50,12 @@ Add the package to `packages` in `~/.pi/agent/settings.json`:
 ```jsonc
 {
   "packages": [
-    "git:github.com/<owner>/local-model-harness"
+    "git:github.com/yuanxujia8090/local-coding-harness"
   ]
 }
 ```
 
-Then restart pi. (Replace `<owner>` with the repository owner.)
+Then restart pi.
 
 ## Configure
 

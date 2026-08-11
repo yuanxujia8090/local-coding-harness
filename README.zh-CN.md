@@ -50,12 +50,12 @@ pi 原生 agent loop
 ```jsonc
 {
   "packages": [
-    "git:github.com/<owner>/local-model-harness"
+    "git:github.com/yuanxujia8090/local-coding-harness"
   ]
 }
 ```
 
-然后重启 pi。（`<owner>` 替换为仓库所有者；也支持 `pi install /本地/路径` 直接从本地目录安装。）
+然后重启 pi。（也支持 `pi install /本地/路径` 直接从本地目录安装。）
 
 ## 配置
 

@@ -38,10 +38,9 @@ export function createContextPolicy(): Policy {
 					kind: "inject",
 					policy: "context",
 					message: event.projection,
-					// 每次压缩后各注入一次：用回合号作窗口 key（compactions 只在
-					// watchdog 的 compact 指令下递增，手动 /compact 不会），
-					// 保证手动压缩与 watchdog 压缩都各得一次注入（审查 F1）。
-					dedupeKey: `post-compact-${state.session.turns}`,
+					// reducer 为每个 context.compacted 事件递增 epoch，因此同一回合
+					// 连续手动 compact 也各自恢复一次动态状态（审查第七轮 P1）。
+					dedupeKey: `post-compact-${state.context.compactionEpoch}`,
 				}];
 			}
 

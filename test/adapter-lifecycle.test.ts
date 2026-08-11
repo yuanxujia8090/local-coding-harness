@@ -296,4 +296,21 @@ describe("adapter lifecycle: compact 共享 verification projection (审查第�
 		expect(nextStart?.message).toBeUndefined();
 		expect(stub.userMessages.filter((message) => message.includes("Coding Protocol"))).toHaveLength(1);
 	});
+
+	test("同一回合连续 compact 均重新注入完整 projection", async () => {
+		const stub = await setupHarness();
+		await stub.handlers.get("session_start")!({}, managedContext(undefined, stub.notifications).ctx);
+		stub.handlers.get("tool_result")!(
+			{ toolCallId: "c1", toolName: "edit", input: { path: "src/index.ts" }, isError: false },
+			managedContext(undefined, stub.notifications).ctx,
+		);
+
+		const compact = managedContext(undefined, stub.notifications);
+		await stub.handlers.get("session_compact")!({}, compact.ctx);
+		await stub.handlers.get("session_compact")!({}, compact.ctx);
+
+		const injected = stub.userMessages.filter((message) => message.includes("Coding Protocol"));
+		expect(injected).toHaveLength(2);
+		expect(injected.every((message) => message.includes("Verification State"))).toBe(true);
+	});
 });

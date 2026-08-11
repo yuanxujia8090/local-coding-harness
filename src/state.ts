@@ -14,6 +14,7 @@ export type SessionState = {
 export type ContextState = {
 	paused: boolean;
 	pendingCompact: boolean;
+	compactionEpoch: number;
 };
 
 /** 质量观察状态：计数语义与 quality 模块对齐，共享真相源见架构 4.2。 */
@@ -64,7 +65,7 @@ export function initialHarnessState(model: ModelReference | null = null): Harnes
 			completed: false,
 			missingConditions: [],
 		},
-		context: { pendingCompact: false, paused: false },
+		context: { pendingCompact: false, paused: false, compactionEpoch: 0 },
 		quality: { emptyResponses: 0, emptyToolCalls: 0, consecutiveSteers: 0 },
 		loop: { recentSignatures: [], notifiedSignatures: [], driftTurns: 0, driftNotified: false },
 		interventions: { blocks: 0, steers: 0, injects: 0, compactions: 0 },
@@ -92,6 +93,8 @@ export function applyEvent(state: HarnessState, event: HarnessEvent): void {
 		case "context.observed":
 			return;
 		case "context.compacted":
+			// 每次压缩都需要一次独立恢复注入，epoch 同时作为 inject 去重窗口。
+			state.context.compactionEpoch += 1;
 			// 压缩完成不清 pendingCompact：它由下一个 turn.end 的 evolveWatchdog
 			// 消费（仍高 -> pause，回落后复位），提前清除会破坏该判定（审查 F1）。
 			return;

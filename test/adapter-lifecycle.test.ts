@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import localModelHarness from "../index";
+import { FileLeaseLock } from "../src/core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -122,8 +124,8 @@ const harnessConfig = JSON.stringify({
 	watchdogThresholdPercent: 80,
 });
 
-async function setupHarness(): Promise<Stub> {
-	const configPath = await writeTempConfig(harnessConfig);
+async function setupHarness(overrides: Record<string, unknown> = {}): Promise<Stub> {
+	const configPath = await writeTempConfig(JSON.stringify({ ...JSON.parse(harnessConfig), ...overrides }));
 	process.env.LOCAL_MODEL_HARNESS_CONFIG = configPath;
 	const stub = createPiStub();
 	localModelHarness(stub.pi);
@@ -316,6 +318,115 @@ describe("adapter lifecycle: compact 共享 verification projection (审查第�
 		const injected = stub.userMessages.filter((message) => message.includes("Coding Protocol"));
 		expect(injected).toHaveLength(2);
 		expect(injected.every((message) => message.includes("Verification State"))).toBe(true);
+	});
+});
+
+describe("adapter lifecycle: task_complete 执行顺序", () => {
+	test("已验证任务先通过 tool_call，再由注册工具完成账本", async () => {
+		const stub = await setupHarness();
+		const { ctx } = managedContext(undefined, stub.notifications);
+		await stub.handlers.get("session_start")!({}, ctx);
+
+		await stub.tools.get("task_contract")!("contract-1", {
+			intent: "Create GitHub introduction",
+			scope: ["GITHUB_INTRO.md"],
+			doneWhen: ["GitHub introduction exists"],
+			verificationPlan: ["test -f GITHUB_INTRO.md"],
+			unresolved: [],
+		});
+		stub.handlers.get("tool_call")!(
+			{ toolCallId: "write-1", toolName: "write", input: { path: "GITHUB_INTRO.md", content: "intro" } },
+			ctx,
+		);
+		stub.handlers.get("tool_result")!(
+			{ toolCallId: "write-1", toolName: "write", input: { path: "GITHUB_INTRO.md", content: "intro" }, isError: false },
+			ctx,
+		);
+		stub.handlers.get("tool_call")!(
+			{ toolCallId: "verify-1", toolName: "bash", input: { command: "test -f GITHUB_INTRO.md" } },
+			ctx,
+		);
+		stub.handlers.get("tool_result")!(
+			{ toolCallId: "verify-1", toolName: "bash", input: { command: "test -f GITHUB_INTRO.md" }, isError: false },
+			ctx,
+		);
+		await stub.tools.get("task_verify")!("task-verify-1", { condition: "GitHub introduction exists" });
+
+		const completionRequest = stub.handlers.get("tool_call")!(
+			{ toolCallId: "complete-1", toolName: "task_complete", input: {} },
+			ctx,
+		);
+		expect(completionRequest).toBeUndefined();
+		await expect(stub.tools.get("task_complete")!("complete-1", {})).resolves.toBeTruthy();
+		expect(stub.entries.at(-1)).toMatchObject({
+			type: "local-task",
+			snapshot: { completed: true, missingConditions: [] },
+		});
+	});
+});
+
+describe("adapter lifecycle: tool execution releases model lock", () => {
+	test("工具开始后，另一受管理 session 可立即获得锁", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "local-model-harness-tool-lock-"));
+		tempPaths.push(directory);
+		const lockPath = join(directory, "model.lock");
+		const first = await setupHarness({ lockPath });
+		const second = await setupHarness({ lockPath });
+		const firstContext = managedContext(undefined, first.notifications).ctx;
+		const secondContext = managedContext(undefined, second.notifications).ctx;
+
+		await first.handlers.get("before_provider_request")!({}, firstContext);
+		expect(existsSync(lockPath)).toBe(true);
+		expect(first.handlers.has("tool_execution_start")).toBe(true);
+
+		await first.handlers.get("tool_execution_start")!({}, firstContext);
+		expect(existsSync(lockPath)).toBe(false);
+		await second.handlers.get("before_provider_request")!({}, secondContext);
+		expect(existsSync(lockPath)).toBe(true);
+		await second.handlers.get("agent_end")!({}, secondContext);
+	});
+});
+
+describe("adapter lifecycle: cancellation cleans model lock", () => {
+	test("agent_end 释放已持有的模型锁", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "local-model-harness-cancel-"));
+		tempPaths.push(directory);
+		const lockPath = join(directory, "model.lock");
+		const stub = await setupHarness({ lockPath });
+		const { ctx } = managedContext(undefined, stub.notifications);
+
+		await stub.handlers.get("before_provider_request")!({}, ctx);
+		expect(existsSync(lockPath)).toBe(true);
+		expect(stub.handlers.has("agent_end")).toBe(true);
+
+		await stub.handlers.get("agent_end")!({}, ctx);
+		expect(existsSync(lockPath)).toBe(false);
+	});
+
+	test("等待锁时取消会清除等待状态", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "local-model-harness-cancel-"));
+		tempPaths.push(directory);
+		const lockPath = join(directory, "model.lock");
+		const owner = new FileLeaseLock(lockPath);
+		expect(await owner.tryAcquire()).toBe(true);
+
+		const stub = await setupHarness({ lockPath });
+		const abort = new AbortController();
+		const { ctx } = managedContext(undefined, stub.notifications);
+		const statuses: Array<[string, string | undefined]> = [];
+		const working: Array<string | undefined> = [];
+		ctx.signal = abort.signal;
+		ctx.ui.setStatus = (key: string, value?: string) => statuses.push([key, value]);
+		ctx.ui.setWorkingMessage = (message?: string) => working.push(message);
+
+		const waiting = stub.handlers.get("before_provider_request")!({}, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		abort.abort();
+		await waiting;
+
+		expect(statuses).toContainEqual(["local-model-lock", undefined]);
+		expect(working).toContain(undefined);
+		await owner.release();
 	});
 });
 

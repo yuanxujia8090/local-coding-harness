@@ -181,8 +181,13 @@ src/
 │   ├── quality.ts   response-quality verdict helpers
 │   ├── readguard.ts require-read-before-edit guard
 │   └── watchdog.ts  context compaction decision helpers
-├── controller.ts    event → policy dispatch, state write-back
 ├── policies/        loop / quality / context / mutation / completion policies
+│   ├── loop.ts      repetition detection + steer
+│   ├── quality.ts   empty response / empty-arg detection
+│   ├── context.ts   compaction decision
+│   ├── mutation.ts  contract gate enforcement
+│   └── completion.ts  task evidence verification + settle steer
+├── controller.ts    event → policy dispatch, state write-back
 └── core.ts          re-exports the public surface
 ```
 

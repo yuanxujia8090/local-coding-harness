@@ -188,8 +188,13 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		return isManagedLocalModel(ctx.model as { provider?: unknown; id?: unknown } | undefined, config);
 	}
 
+	function clearLockStatus(ctx: ExtensionContext): void {
+		ctx.ui.setStatus("local-model-lock", undefined);
+		ctx.ui.setWorkingMessage();
+	}
+
 	async function acquireLock(ctx: ExtensionContext): Promise<void> {
-		if (lockHeld) return;
+		if (lockHeld || ctx.signal?.aborted) return;
 
 		const startedAt = Date.now();
 		let waitNotified = false;
@@ -197,15 +202,26 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		ctx.ui.setStatus("local-model-lock", "Local model: waiting for model slot");
 		ctx.ui.setWorkingMessage("Local model: waiting for model slot…");
 		while (true) {
+			if (ctx.signal?.aborted) {
+				clearLockStatus(ctx);
+				return;
+			}
 			try {
 				if (await lock.tryAcquire()) break;
 			} catch (error) {
 				recordError("acquireLock:tryAcquire", error);
-				ctx.ui.setStatus("local-model-lock", undefined);
-				ctx.ui.setWorkingMessage();
+				clearLockStatus(ctx);
 				return;
 			}
-			await sleep(250, ctx.signal);
+			try {
+				await sleep(250, ctx.signal);
+			} catch (error) {
+				if (ctx.signal?.aborted) {
+					clearLockStatus(ctx);
+					return;
+				}
+				throw error;
+			}
 			const now = Date.now();
 			if (now - lastOwnerCheck >= 2_000) {
 				lastOwnerCheck = now;
@@ -228,14 +244,13 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 	}
 
 	async function releaseLock(ctx: ExtensionContext): Promise<void> {
-		if (!lockHeld) return;
 		try {
-			await lock.release();
-			ctx.ui.setStatus("local-model-lock", undefined);
+			if (lockHeld) await lock.release();
 		} catch (error) {
 			recordError("releaseLock", error);
 		} finally {
 			lockHeld = false;
+			clearLockStatus(ctx);
 		}
 	}
 
@@ -415,6 +430,11 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		});
 	});
 
+	pi.on("tool_execution_start", async (_event, ctx) => {
+		if (!isManagedSession(ctx)) return;
+		await releaseLock(ctx);
+	});
+
 	pi.on("tool_call", (event, ctx) => {
 		const result = safeRun(
 			"tool_call",
@@ -505,6 +525,10 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 				lastInjectedBlock = injected;
 			}
 		});
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		await releaseLock(ctx);
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {

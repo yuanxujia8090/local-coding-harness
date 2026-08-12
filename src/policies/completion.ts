@@ -16,13 +16,8 @@ export function createCompletionPolicy(deps: CompletionPolicyDeps): Policy {
 		id: "completion",
 		evaluate(event: HarnessEvent, _state: Readonly<HarnessState>): readonly Directive[] {
 			const { ledger } = deps;
-			if (event.type === "tool.requested" && event.tool === "task_complete") {
-				const task = ledger.snapshot();
-				if (!task.completed) {
-					return [{ kind: "block", policy: "completion", reason: `Task incomplete. Missing evidence: ${task.missingConditions.join(", ") || "call task_complete with evidence"}.` }];
-				}
-				return [];
-			}
+			// task_complete 的证据校验只能在注册工具 execute 内进行：Pi 先触发
+			// tool_call hook，预执行 block 会让唯一调用 ledger.complete() 的路径不可达。
 			if (event.type === "agent.settled") {
 				const task = ledger.snapshot();
 				if (task.mutationToolCalls.length > 0 && !task.completed) {

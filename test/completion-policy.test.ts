@@ -68,14 +68,13 @@ describe("CompletionPolicy", () => {
 		expect(second.filter((directive) => directive.kind === "steer")).toHaveLength(0);
 	});
 
-	test("doneWhen 未全部验证 -> task_complete block", () => {
+	test("task_complete 不在 tool.requested 阶段预阻断", () => {
 		const ledger = new TaskCompletionLedger();
 		ledger.setContract(contract);
-		ledger.recordToolCall("m1", "bash", { command: "npm uninstall -g example-tool" });
-		ledger.recordToolResult("m1", "bash", { command: "npm uninstall -g example-tool" }, false);
 		const controller = makeController(ledger);
 		const directives = controller.handle({ type: "tool.requested", callId: "c9", tool: "task_complete", input: {} });
-		expect(directives.some((directive) => directive.kind === "block")).toBe(true);
+		expect(directives.some((directive) => directive.kind === "block")).toBe(false);
+		expect(ledger.complete()).toEqual({ ok: false, missingConditions: contract.doneWhen });
 	});
 
 	test("全部验证后 task_complete 放行", () => {

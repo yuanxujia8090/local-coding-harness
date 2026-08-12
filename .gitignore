@@ -3,3 +3,5 @@ coverage/
 dist/
 .DS_Store
 *.log
+.pi-subagents
+.vscode

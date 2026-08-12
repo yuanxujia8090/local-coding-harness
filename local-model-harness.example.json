@@ -14,7 +14,7 @@
 		"threshold": 8
 	},
 	"turnCap": {
-		"enabled": true,
+		"enabled": false,
 		"maxTurns": 40
 	},
 	"gate": {

@@ -134,6 +134,15 @@ Loop interventions: 0                                <- how often the model got 
 
 Read-only exploration (`read`, `grep`, `find`, `ls`, and known read-only bash like `git status`, `ls`, `cat`, including read-only pipelines like `git status | head -30`) never needs a contract. `edit`, `write`, and any bash command that cannot be proven read-only are blocked until a contract exists — the block message is signed `[local-model-harness]` and includes a filled-in `task_contract` example. If the model keeps hitting the gate (3 blocks), the harness steers it with an explicit instruction; after 6 blocks it warns you in the UI. `gate.enabled: false` is the escape hatch if you ever need the gate off without uninstalling. The model never has to recite internal tool-call IDs — it states conditions in words; the ledger matches evidence.
 
+## What's new in v0.3.0
+
+- **Policy layer extraction.** Core logic split into `src/base/` (events, state, policy contracts), `src/mechanisms/` (pure mechanisms), and `src/policies/` (loop, quality, context, mutation, completion). Every mechanism stays unit-testable with zero pi imports; `src/pi/adapter.ts` is the sole pi integration point.
+- **Task completion & lock safety.** `task_complete` now releases the provider lock before terminating, preventing orphaned locks on abnormal exits.
+- **Compaction injection dedup.** Uses `compactionEpoch` to avoid double-injecting protocol/state after compaction.
+- **Adapter exception guard.** Fallback hook catches adapter errors and applies fail-closed gate behavior.
+- **Model switch resets turnCap.** Switching the managed model resets the turn counter and surfaces harness status.
+- **Review skill.** `publish/.claude/skills/reviewing-local-model-harness/SKILL.md` covers hook ordering, ledger boundaries, bash classification, lock lifecycle, test isolation, npm packaging, and benchmark gates.
+
 ## Design notes
 
 - **KV-cache-friendly injection.** Protocol, verification state, and task state are injected as a trailing custom message (not a system-prompt rewrite), so the cached prefix on your local server stays valid. The block is deduplicated and re-injected after compaction.

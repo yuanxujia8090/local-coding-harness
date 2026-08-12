@@ -154,6 +154,7 @@ Loop interventions: 0                                <- 模型被转向提醒的
 
 ## 版本历史
 
+- **v0.3.0** 架构重构：核心逻辑拆分为 `src/base/`（事件/状态/policy 契约）、`src/mechanisms/`（纯机制）、`src/policies/`（loop/quality/context/mutation/completion）；`task_complete` 完成后释放 provider 锁；compactionEpoch 去重压缩注入；adapter 异常兜底与 fail-closed 门禁；切换模型时重置 turnCap；新增 review skill。
 - **v0.2.3** Read Guard：`edit`/`write` 一个从未 `read` 过的路径会被拦截并引导（默认关，`readGuard.enabled: true` 开启）。防御型机制（bench 仅 1 轮 2 次无先读的 edit）。
 - **v0.2.2** Quality Monitor：检测空响应（empty responses）与空参数工具调用（empty tool calls），计入 telemetry 并引导该回合。
 - **v0.2.1** 验证节奏死锁修复：`&&`/`||`/`!`/`;` 链、测试命令（`node test.js`、`npm test`…）识别为只读；一次只读结果可支撑多个完成条件。t2 errors 27→0。

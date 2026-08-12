@@ -29,6 +29,13 @@ const VERIFICATION_COMMANDS = [
 	/(?:^|\s)tsc\b/,
 ];
 
+// ponytail: 纯文档改动没有可跑的验证命令，豁免 pending；需要 .rst/.txt 等再扩。
+const DOCS_ONLY_EXTENSIONS = [".md", ".mdx"];
+
+export function isDocsOnlyFile(path: string): boolean {
+	return DOCS_ONLY_EXTENSIONS.some((extension) => path.endsWith(extension));
+}
+
 export function isVerificationCommand(command: string): boolean {
 	return VERIFICATION_COMMANDS.some((pattern) => pattern.test(command));
 }
@@ -120,6 +127,7 @@ export class SessionTelemetry {
 		for (const [tool, count] of [...this.toolErrorsByTool.entries()].sort((a, b) => b[1] - a[1])) {
 			toolErrorsByTool[tool] = count;
 		}
+		const hasCodeChanges = [...this.changedFiles].some((file) => !isDocsOnlyFile(file));
 		return {
 			model: this.model,
 			durationMs: Math.max(0, now - this.startedAt),
@@ -131,7 +139,7 @@ export class SessionTelemetry {
 			toolErrors: this.toolErrors,
 			toolErrorsByTool,
 			changedFiles: [...this.changedFiles].sort(),
-			verificationPending: this.verificationPending,
+			verificationPending: this.verificationPending && hasCodeChanges,
 			verificationCommands: [...this.verificationCommands],
 			contextPeakPercent: this.contextPeakPercent,
 			compactions: this.compactions,

@@ -105,6 +105,7 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 	let readGuard = new ReadGuard();
 	let unverifiedWarningShown = false;
 	let lastInjectedBlock: string | undefined;
+	let completedTaskCount = 0;
 
 	function createController(): HarnessController {
 		const completion = createCompletionPolicy({ ledger: taskLedger });
@@ -274,7 +275,7 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		pi.appendEntry("local-report", { at: new Date().toISOString(), snapshot, task });
 		pi.sendMessage({
 			customType: "local-report",
-			content: `${formatTelemetryReport(snapshot)}\n${formatTaskCompletionReport(task)}`,
+			content: `${formatTelemetryReport(snapshot)}\n${formatTaskCompletionReport(task, completedTaskCount)}`,
 			display: true,
 		});
 	}
@@ -374,6 +375,7 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		controller = createController();
 		unverifiedWarningShown = false;
 		lastInjectedBlock = undefined;
+		completedTaskCount = 0;
 	});
 
 	pi.on("model_select", (event, ctx) => {
@@ -395,7 +397,7 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 		return safeRun("before_agent_start", () => {
 			turnCap.reset();
 			if (taskLedger.snapshot().completed) {
-				taskLedger = new TaskCompletionLedger();
+				taskLedger = new TaskCompletionLedger(new Set(config.gateExtraReadOnlyTools));
 				controller = createController();
 			}
 			telemetry.setModel(modelLabel(ctx));
@@ -603,6 +605,7 @@ export function registerActiveAdapter(pi: ExtensionAPI, config: HarnessConfig): 
 			if (!result.ok) {
 				throw new Error(`Task incomplete. Missing evidence: ${result.missingConditions.join(", ")}`);
 			}
+			completedTaskCount++;
 			return { content: [{ type: "text", text: "Task completion evidence accepted." }], details: undefined };
 		},
 	});

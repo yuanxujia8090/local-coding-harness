@@ -119,8 +119,12 @@ export class TaskCompletionLedger {
 	}
 }
 
-export function formatTaskCompletionReport(snapshot: TaskCompletionSnapshot): string {
-	if (!snapshot.intent) return "Task completion: not started";
+export function formatTaskCompletionReport(snapshot: TaskCompletionSnapshot, completedEarlier = 0): string {
+	if (!snapshot.intent) {
+		return completedEarlier > 0
+			? `Task completion: not started (${completedEarlier} completed earlier this session)`
+			: "Task completion: not started";
+	}
 	if (snapshot.completed) return `Task completion: completed (${snapshot.intent})`;
 	return `Task completion: pending (${snapshot.missingConditions.join(", ")})`;
 }

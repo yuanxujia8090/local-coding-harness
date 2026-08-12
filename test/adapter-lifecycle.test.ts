@@ -38,6 +38,8 @@ type Stub = {
 	userMessages: string[];
 	notifications: string[];
 	tools: Map<string, (arg0: unknown, arg1: unknown) => unknown>;
+	commands: Map<string, (arg0: unknown, arg1: unknown) => unknown>;
+	messages: Array<{ customType?: string; content?: string }>;
 	entries: Array<{ type: string; at: string; [key: string]: unknown }>;
 };
 
@@ -49,6 +51,8 @@ function createPiStub(): Stub {
 		userMessages: [],
 		notifications: [],
 		tools: new Map(),
+		commands: new Map(),
+		messages: [],
 		entries: [],
 	};
 	const pi = {
@@ -58,11 +62,15 @@ function createPiStub(): Stub {
 		registerTool(definition: { name: string; execute: (arg0: unknown, arg1: unknown) => unknown }) {
 			stub.tools.set(definition.name, definition.execute);
 		},
-		registerCommand() {},
+		registerCommand(name: string, definition: { handler: (arg0: unknown, arg1: unknown) => unknown }) {
+			stub.commands.set(name, definition.handler);
+		},
 		appendEntry(type: string, data: Record<string, unknown>) {
 			stub.entries.push({ type, at: String(data.at ?? ""), ...data });
 		},
-		sendMessage() {},
+		sendMessage(message: unknown) {
+			stub.messages.push(message as { customType?: string; content?: string });
+		},
 		sendUserMessage(message: unknown) {
 			stub.userMessages.push(String(message));
 		},
@@ -491,6 +499,70 @@ describe("adapter resilience: hook 异常不冒泡 (review 问题 1)", () => {
 		) as { block?: boolean; reason?: string } | undefined;
 		expect(result).toMatchObject({ block: true });
 		expect(String(result?.reason)).toContain("contract");
+	});
+});
+
+describe("adapter lifecycle: ledger 回收后的状态延续 (session 019ff4e2 分析)", () => {
+	async function completeOneTask(stub: Stub, ctx: ExtensionContext): Promise<void> {
+		await stub.tools.get("task_contract")!("contract-1", {
+			intent: "Create GitHub introduction",
+			scope: ["GITHUB_INTRO.md"],
+			doneWhen: ["GitHub introduction exists"],
+			verificationPlan: ["test -f GITHUB_INTRO.md"],
+			unresolved: [],
+		});
+		stub.handlers.get("tool_call")!(
+			{ toolCallId: "write-1", toolName: "write", input: { path: "GITHUB_INTRO.md", content: "intro" } },
+			ctx,
+		);
+		stub.handlers.get("tool_result")!(
+			{ toolCallId: "write-1", toolName: "write", input: { path: "GITHUB_INTRO.md", content: "intro" }, isError: false },
+			ctx,
+		);
+		stub.handlers.get("tool_call")!(
+			{ toolCallId: "verify-1", toolName: "bash", input: { command: "test -f GITHUB_INTRO.md" } },
+			ctx,
+		);
+		stub.handlers.get("tool_result")!(
+			{ toolCallId: "verify-1", toolName: "bash", input: { command: "test -f GITHUB_INTRO.md" }, isError: false },
+			ctx,
+		);
+		await stub.tools.get("task_verify")!("task-verify-1", { condition: "GitHub introduction exists" });
+		stub.handlers.get("tool_call")!({ toolCallId: "complete-1", toolName: "task_complete", input: {} }, ctx);
+		await stub.tools.get("task_complete")!("complete-1", {});
+	}
+
+	test("回收后的新账本保留配置的只读工具豁免", async () => {
+		// extraReadOnlyTools 仅对 edit/write/patch/bash 可观察（未知工具默认只读），故用 patch 验证。
+		const stub = await setupHarness({ gate: { readOnlyTools: ["patch"] } });
+		const { ctx } = managedContext(undefined, stub.notifications);
+		await stub.handlers.get("session_start")!({}, ctx);
+
+		// 回收前：配置的豁免生效，patch 免契约。
+		expect(
+			stub.handlers.get("tool_call")!({ toolCallId: "c-0", toolName: "patch", input: {} }, ctx),
+		).toBeUndefined();
+
+		await completeOneTask(stub, ctx);
+		await stub.handlers.get("before_agent_start")!({}, ctx);
+
+		// 回收后：同一豁免仍生效（修复前新账本丢失 extraReadOnlyTools，会误拦截）。
+		expect(
+			stub.handlers.get("tool_call")!({ toolCallId: "c-1", toolName: "patch", input: {} }, ctx),
+		).toBeUndefined();
+	});
+
+	test("local-report 保留本 session 已完成任务数", async () => {
+		const stub = await setupHarness();
+		const { ctx } = managedContext(undefined, stub.notifications);
+		await stub.handlers.get("session_start")!({}, ctx);
+
+		await completeOneTask(stub, ctx);
+		await stub.handlers.get("before_agent_start")!({}, ctx);
+
+		await stub.commands.get("local-report")!({}, ctx);
+		const report = stub.messages.at(-1);
+		expect(report?.content).toContain("Task completion: not started (1 completed earlier this session)");
 	});
 });
 

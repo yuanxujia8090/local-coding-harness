@@ -243,6 +243,22 @@ describe("SessionTelemetry", () => {
 		});
 	});
 
+	test("docs-only changes do not hold verification pending", () => {
+		const telemetry = new SessionTelemetry("test-model-7b", 1_000);
+
+		telemetry.recordToolResult("edit", { path: "docs/guide/README.md" }, false);
+		telemetry.recordToolResult("write", { path: "CHANGELOG.mdx" }, false);
+		expect(telemetry.snapshot(2_000)).toMatchObject({
+			changedFiles: ["CHANGELOG.mdx", "docs/guide/README.md"],
+			verificationPending: false,
+			verificationCommands: [],
+		});
+
+		// 一旦混入代码文件，pending 恢复：豁免只看「是否全部为文档」。
+		telemetry.recordToolResult("edit", { path: "src/a.ts" }, false);
+		expect(telemetry.snapshot(3_000)).toMatchObject({ verificationPending: true });
+	});
+
 	test("formats a concise local report", () => {
 		const report = formatTelemetryReport({
 			model: "test-model-7b",
@@ -475,6 +491,18 @@ describe("TaskCompletionLedger", () => {
 		ledger.recordToolCall("remove", "bash", { command: "npm uninstall -g example-tool" });
 
 		expect(formatTaskCompletionReport(ledger.snapshot())).toContain("Task completion: pending (package absent, config absent)");
+	});
+
+	test("keeps earlier completions visible after ledger recycle", () => {
+		const recycled = new TaskCompletionLedger();
+
+		expect(formatTaskCompletionReport(recycled.snapshot())).toBe("Task completion: not started");
+		expect(formatTaskCompletionReport(recycled.snapshot(), 1)).toBe(
+			"Task completion: not started (1 completed earlier this session)",
+		);
+		expect(formatTaskCompletionReport(recycled.snapshot(), 3)).toBe(
+			"Task completion: not started (3 completed earlier this session)",
+		);
 	});
 });
 
